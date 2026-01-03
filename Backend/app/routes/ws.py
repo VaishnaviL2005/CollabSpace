@@ -7,6 +7,8 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.chat_member import ChatMember
 from app.models.user import User
+import json
+from app.core.redis import redis_client
 
 router = APIRouter()
 
@@ -18,18 +20,16 @@ class ConnectionManager:
         self.active_connections: Dict[int, List[WebSocket]] = {}
 
     async def connect(self, chat_id: int, websocket: WebSocket):
-        if chat_id not in self.active_connections:
-            self.active_connections[chat_id] = []
-        self.active_connections[chat_id].append(websocket)
+        self.active_connections.setdefault(chat_id, []).append(websocket)
 
     def disconnect(self, chat_id: int, websocket: WebSocket):
         self.active_connections[chat_id].remove(websocket)
         if not self.active_connections[chat_id]:
             del self.active_connections[chat_id]
 
-    async def broadcast(self, chat_id: int, message: dict):
-        for connection in self.active_connections.get(chat_id, []):
-            await connection.send_json(message)
+    async def send_local(self, chat_id: int, message: dict):
+        for ws in self.active_connections.get(chat_id, []):
+            await ws.send_json(message)
 
 
 manager = ConnectionManager()
@@ -82,7 +82,7 @@ async def chat_ws(
         await manager.connect(chat_id, websocket)
 
         # Notify join (optional)
-        await manager.broadcast(chat_id, {
+        await manager.send_local(chat_id, {
             "username": "system",
             "message": f"{user.username} joined the chat"
         })
@@ -91,7 +91,6 @@ async def chat_ws(
         while True:
             text = await websocket.receive_text()
 
-            # 1. Save message to DB
             message = Message(
                 chat_id=chat_id,
                 sender_id=user.id,
@@ -101,17 +100,24 @@ async def chat_ws(
             db.commit()
             db.refresh(message)
 
-            # 2. Broadcast message
-            await manager.broadcast(chat_id, {
+            payload = {
+                "chat_id": chat_id,
                 "id": message.id,
                 "username": user.username,
                 "message": message.content,
                 "created_at": message.created_at.isoformat()
-            })
+            }
+
+            # 🔴 PUBLISH TO REDIS
+            await redis_client.publish(
+                f"chat:{chat_id}",
+                json.dumps(payload)
+            )
+
 
     except WebSocketDisconnect:
         manager.disconnect(chat_id, websocket)
-        await manager.broadcast(chat_id, {
+        await manager.send_local(chat_id, {
             "username": "system",
             "message": f"{user.username} left the chat"
         })
