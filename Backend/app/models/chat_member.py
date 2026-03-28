@@ -1,4 +1,5 @@
 from sqlalchemy import Column, BigInteger, Enum, TIMESTAMP, ForeignKey, UniqueConstraint
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.base import Base
 
@@ -17,6 +18,11 @@ class ChatMember(Base):
         nullable=False
     )
     role = Column(Enum("admin", "member"), default="member")
+    last_read_message_id = Column(
+        BigInteger, 
+        ForeignKey("messages.id", ondelete="SET NULL"), 
+        nullable=True
+    )
     joined_at = Column(TIMESTAMP, server_default=func.now())
 
     __table_args__ = (

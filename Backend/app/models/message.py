@@ -17,9 +17,11 @@ class Message(Base):
         nullable=False
     )
     content = Column(Text, nullable=False)
-    message_type = Column(Enum("text"), default="text")
+    message_type = Column(Text, default="text")
+    file_url = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
 
     __table_args__ = (
         Index("idx_chat_created", "chat_id", "created_at"),
+        Index("idx_chat_id", "chat_id", "id"),
     )

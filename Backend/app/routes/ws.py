@@ -15,22 +15,54 @@ router = APIRouter()
 # -------------------------------
 # Connection Manager
 # -------------------------------
+import time
+import asyncio
+
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[int, List[WebSocket]] = {}
+        # Maps websocket to metadata: {"chat_id": int, "last_pong": float}
+        self.active_connections: Dict[WebSocket, dict] = {}
 
     async def connect(self, chat_id: int, websocket: WebSocket):
-        self.active_connections.setdefault(chat_id, []).append(websocket)
+        self.active_connections[websocket] = {"chat_id": chat_id, "last_pong": time.time()}
 
-    def disconnect(self, chat_id: int, websocket: WebSocket):
-        self.active_connections[chat_id].remove(websocket)
-        if not self.active_connections[chat_id]:
-            del self.active_connections[chat_id]
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            del self.active_connections[websocket]
+
+    def update_pong(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections[websocket]["last_pong"] = time.time()
 
     async def send_local(self, chat_id: int, message: dict):
-        for ws in self.active_connections.get(chat_id, []):
-            await ws.send_json(message)
+        # Create list copy to allow modifying real dict safely if failures happen
+        for ws, data in list(self.active_connections.items()):
+            if data["chat_id"] == chat_id:
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    self.disconnect(ws)
 
+    async def heartbeat(self):
+        while True:
+            await asyncio.sleep(30)
+            now = time.time()
+            stale_sockets = []
+            for ws, data in list(self.active_connections.items()):
+                if now - data["last_pong"] > 65:
+                    stale_sockets.append(ws)
+                else:
+                    try:
+                        await ws.send_json({"type": "ping"})
+                    except Exception:
+                        stale_sockets.append(ws)
+            
+            for ws in stale_sockets:
+                try:
+                    await ws.close(code=1008)
+                except Exception:
+                    pass
+                self.disconnect(ws)
 
 manager = ConnectionManager()
 
@@ -81,46 +113,95 @@ async def chat_ws(
         # Register connection
         await manager.connect(chat_id, websocket)
 
-        # Notify join (optional)
-        await manager.send_local(chat_id, {
-            "username": "system",
-            "message": f"{user.username} joined the chat"
-        })
+        # Notify join
+        join_payload = {
+            "type": "presence",
+            "chat_id": chat_id,
+            "user_id": user.id,
+            "username": user.username,
+            "status": "online"
+        }
+        await redis_client.publish(f"chat:{chat_id}", json.dumps(join_payload))
 
         # Listen for messages
         while True:
             text = await websocket.receive_text()
 
-            message = Message(
-                chat_id=chat_id,
-                sender_id=user.id,
-                content=text
-            )
-            db.add(message)
-            db.commit()
-            db.refresh(message)
+            try:
+                data = json.loads(text)
+                event_type = data.get("type", "message")
+            except json.JSONDecodeError:
+                # Fallback to plain text for backwards compatibility
+                data = {"content": text}
+                event_type = "message"
 
-            payload = {
-                "chat_id": chat_id,
-                "id": message.id,
-                "username": user.username,
-                "message": message.content,
-                "created_at": message.created_at.isoformat()
-            }
+            if event_type == "pong":
+                manager.update_pong(websocket)
 
-            # 🔴 PUBLISH TO REDIS
-            await redis_client.publish(
-                f"chat:{chat_id}",
-                json.dumps(payload)
-            )
+            elif event_type == "typing":
+                typing_payload = {
+                    "type": "typing",
+                    "chat_id": chat_id,
+                    "user_id": user.id,
+                    "username": user.username
+                }
+                await redis_client.publish(f"chat:{chat_id}", json.dumps(typing_payload))
 
+            elif event_type == "read_receipt":
+                message_id = data.get("message_id")
+                if message_id:
+                    membership.last_read_message_id = message_id
+                    db.commit()
+                    read_payload = {
+                        "type": "read_receipt",
+                        "chat_id": chat_id,
+                        "user_id": user.id,
+                        "username": user.username,
+                        "message_id": message_id
+                    }
+                    await redis_client.publish(f"chat:{chat_id}", json.dumps(read_payload))
+
+            else:
+                # Standard message
+                content = data.get("content", text)
+                file_url = data.get("file_url")
+                msg_type = "file" if file_url else "text"
+                
+                message = Message(
+                    chat_id=chat_id,
+                    sender_id=user.id,
+                    content=content,
+                    message_type=msg_type,
+                    file_url=file_url
+                )
+                db.add(message)
+                db.commit()
+                db.refresh(message)
+
+                msg_payload = {
+                    "type": "message",
+                    "chat_id": chat_id,
+                    "id": message.id,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "message": message.content,
+                    "message_type": message.message_type,
+                    "file_url": message.file_url,
+                    "created_at": message.created_at.isoformat()
+                }
+                await redis_client.publish(f"chat:{chat_id}", json.dumps(msg_payload))
 
     except WebSocketDisconnect:
-        manager.disconnect(chat_id, websocket)
-        await manager.send_local(chat_id, {
-            "username": "system",
-            "message": f"{user.username} left the chat"
-        })
+        manager.disconnect(websocket)
+        leave_payload = {
+            "type": "presence",
+            "chat_id": chat_id,
+            "user_id": user.id,
+            "username": user.username,
+            "status": "offline"
+        }
+        await redis_client.publish(f"chat:{chat_id}", json.dumps(leave_payload))
 
     finally:
+        manager.disconnect(websocket)
         db.close()

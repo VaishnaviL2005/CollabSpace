@@ -1,16 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, status,Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, File, UploadFile, Form
 from sqlalchemy.orm import Session
+import shutil
+import uuid
+import os
+from pyrate_limiter import Duration, Limiter, Rate  # KEEP THIS
 
 from app.db.session import get_db
 from app.models.message import Message
 from app.models.chat_member import ChatMember
-from app.schemas.message import MessageResponse, MessageCreate
+from app.schemas.message import MessageResponse, MessageCreate, PaginatedMessageResponse
 from app.models.user import User
 from app.core.auth import get_current_user
+from fastapi_limiter.depends import RateLimiter  # CORRECT IMPORT
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
 
-@router.get("/{chat_id}", response_model=list[MessageResponse])
+@router.get("/{chat_id}", response_model=PaginatedMessageResponse)
 def get_messages(
     chat_id: int,
     limit: int = Query(20, ge=1, le=100),
@@ -18,7 +23,6 @@ def get_messages(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-
     # 1. Verify user is a member of this chat
     membership = (
         db.query(ChatMember)
@@ -43,16 +47,28 @@ def get_messages(
     messages = (
         query
         .order_by(Message.id.desc())
-        .limit(limit)
+        .limit(limit + 1)
         .all()
     )
 
-    return list(reversed(messages))
+    has_more = len(messages) > limit
+    if has_more:
+        messages = messages[:-1]
+
+    messages.reverse()
+    next_cursor = messages[0].id if messages else None
+
+    return {
+        "messages": messages,
+        "next_cursor": next_cursor,
+        "has_more": has_more
+    }
 
 @router.post(
     "",
     response_model=MessageResponse,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RateLimiter(limiter=Limiter(Rate(10, Duration.SECOND * 60))))]
 )
 def send_message(
     data: MessageCreate,
@@ -87,4 +103,3 @@ def send_message(
     db.refresh(message)
 
     return message
-
