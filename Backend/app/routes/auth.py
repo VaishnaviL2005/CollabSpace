@@ -43,17 +43,28 @@ def register_user(
     }
 
 
+from sqlalchemy import or_
+
 @router.post("/login")
 def login_user(
     data: UserLogin,
     db: Session = Depends(get_db)
 ):
-    user = db.query(User).filter(User.email == data.email).first()
+    identifier = data.email or data.username
+    if not identifier:
+        raise HTTPException(
+            status_code=400,
+            detail="Must provide email or username"
+        )
+
+    user = db.query(User).filter(
+        or_(User.email == identifier, User.username == identifier)
+    ).first()
 
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            detail="Invalid credentials"
         )
 
     token = create_access_token({"sub": str(user.id)})

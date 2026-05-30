@@ -13,6 +13,7 @@ from app.routes.ws import router as ws_router
 from app.core.redis_subscriber import redis_listener
 from app.routes.meeting import router as meeting_router
 from app.routes.meeting_ws import router as meeting_ws_router
+from app.routes.presence_ws import router as presence_ws_router
 
 from app.routes.ws import manager
 
@@ -54,3 +55,4 @@ app.include_router(message_router)
 app.include_router(ws_router)
 app.include_router(meeting_router)
 app.include_router(meeting_ws_router)
+app.include_router(presence_ws_router)
