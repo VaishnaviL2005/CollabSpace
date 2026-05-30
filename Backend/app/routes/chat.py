@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from fastapi import HTTPException, status
 from app.db.session import get_db
 from app.models.chat import Chat
@@ -8,10 +8,22 @@ from app.models.user import User
 from app.schemas.chat import DirectChatListItem
 from app.core.auth import get_current_user
 from app.schemas.chat import DirectChatCreate
-from sqlalchemy import func 
+from sqlalchemy import func
+import json
+from app.core.redis import redis_client
 from app.schemas.chat import GroupChatCreate, GroupChatResponse , GroupChatListItem , GroupChatSearchItem,AddGroupMember 
+from app.schemas.user import UserSearchResponse
 
 router = APIRouter(prefix="/chats", tags=["Chats"])
+
+async def publish_conversation_change(user_ids: list[int]):
+    await redis_client.publish(
+        "conversation_changes",
+        json.dumps({
+            "type": "conversations_changed",
+            "user_ids": [str(user_id) for user_id in set(user_ids)]
+        })
+    )
 
 @router.get(
     "/direct",
@@ -58,7 +70,7 @@ def get_direct_chats(
     return result
 
 @router.post("/direct")
-def add_member_to_dm(
+async def add_member_to_dm(
     data: DirectChatCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -86,6 +98,7 @@ def add_member_to_dm(
     )
 
     if existing_chat:
+        await publish_conversation_change([current_user.id, other_user.id])
         return {
             "chat_id": existing_chat.id,
             "message": "Direct chat already exists"
@@ -103,6 +116,7 @@ def add_member_to_dm(
         ChatMember(chat_id=chat.id, user_id=other_user.id)
     ])
     db.commit()
+    await publish_conversation_change([current_user.id, other_user.id])
 
     return {
         "chat_id": chat.id,
@@ -114,7 +128,7 @@ def add_member_to_dm(
     response_model=GroupChatResponse,
     status_code=status.HTTP_201_CREATED
 )
-def create_group_chat(
+async def create_group_chat(
     data: GroupChatCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -150,6 +164,7 @@ def create_group_chat(
 
     db.add_all(chat_members)
     db.commit()
+    await publish_conversation_change([member.user_id for member in chat_members])
 
     return GroupChatResponse(chat_id=chat.id, name=chat.name)
 
@@ -161,6 +176,7 @@ def get_my_groups(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    current_membership = aliased(ChatMember)
     groups = (
         db.query(
             Chat.id.label("chat_id"),
@@ -169,9 +185,10 @@ def get_my_groups(
             func.count(ChatMember.user_id).label("member_count")
         )
         .join(ChatMember, Chat.id == ChatMember.chat_id)
+        .join(current_membership, Chat.id == current_membership.chat_id)
         .filter(
             Chat.type == "group",
-            ChatMember.user_id == current_user.id
+            current_membership.user_id == current_user.id
         )
         .group_by(Chat.id)
         .all()
@@ -208,7 +225,7 @@ def search_my_groups(
     "/group/{chat_id}/members",
     status_code=201
 )
-def add_member_to_group(
+async def add_member_to_group(
     chat_id: int,
     data: AddGroupMember,
     db: Session = Depends(get_db),
@@ -255,9 +272,41 @@ def add_member_to_group(
     # 5️⃣ Add user to group
     db.add(ChatMember(chat_id=chat_id, user_id=data.user_id))
     db.commit()
+    member_ids = [
+        member.user_id
+        for member in db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
+    ]
+    await publish_conversation_change(member_ids)
 
     return {
         "message": "User added to group",
         "user_id": user.id,
         "username": user.username
     }
+
+@router.get(
+    "/group/{chat_id}/members",
+    response_model=list[UserSearchResponse]
+)
+def get_group_members(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    is_member = (
+        db.query(ChatMember)
+        .filter(
+            ChatMember.chat_id == chat_id,
+            ChatMember.user_id == current_user.id
+        )
+        .first()
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not a group member")
+
+    return (
+        db.query(User)
+        .join(ChatMember, User.id == ChatMember.user_id)
+        .filter(ChatMember.chat_id == chat_id)
+        .all()
+    )

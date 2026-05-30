@@ -18,6 +18,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -246,6 +247,7 @@ export default function ChatArea() {
   const [showSearch, setShowSearch] = useState(false);
   const [attachment, setAttachment] = useState<File | null>(null);
   const [showSavedMessages, setShowSavedMessages] = useState(false);
+  const [showConversationDetails, setShowConversationDetails] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -442,9 +444,9 @@ export default function ChatArea() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuItem>
-                    <User className="w-4 h-4 mr-2" />
-                    View Profile
+                  <DropdownMenuItem onClick={() => setShowConversationDetails(true)}>
+                    {isGroup ? <Users className="w-4 h-4 mr-2" /> : <User className="w-4 h-4 mr-2" />}
+                    {isGroup ? 'View Members' : 'View Profile'}
                   </DropdownMenuItem>
                   <DropdownMenuItem>
                     <FileImage className="w-4 h-4 mr-2" />
@@ -611,6 +613,54 @@ export default function ChatArea() {
           </Tooltip>
         </div>
       </div>
+
+      <Dialog open={showConversationDetails} onOpenChange={setShowConversationDetails}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{isGroup ? `${activeConversation.name} members` : activeConversation.name}</DialogTitle>
+            <DialogDescription>
+              {isGroup
+                ? `${activeConversation.participants.length} member${activeConversation.participants.length === 1 ? '' : 's'} in this group`
+                : 'Direct-message profile'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {isGroup ? (
+            <div className="max-h-72 space-y-1 overflow-y-auto">
+              {activeConversation.participants.map(participant => {
+                const status = globalPresence[participant.id] || participant.status;
+                return (
+                  <div key={participant.id} className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-muted/50">
+                    <Avatar className="h-9 w-9">
+                      <AvatarImage src={participant.avatar} />
+                      <AvatarFallback>{participant.username.charAt(0).toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{participant.username}</p>
+                      <p className="text-xs capitalize text-muted-foreground">{status}</p>
+                    </div>
+                    <span className={cn(
+                      'h-2.5 w-2.5 rounded-full',
+                      status === 'online' ? 'bg-status-online' : 'bg-muted-foreground'
+                    )} />
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 rounded-md border p-3">
+              <Avatar className="h-12 w-12">
+                <AvatarImage src={activeConversation.participants[0]?.avatar} />
+                <AvatarFallback>{activeConversation.name.charAt(0).toUpperCase()}</AvatarFallback>
+              </Avatar>
+              <div>
+                <p className="font-medium">{activeConversation.participants[0]?.username || activeConversation.name}</p>
+                <p className="text-sm capitalize text-muted-foreground">{participantStatus || 'offline'}</p>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       
       {/* Saved Messages Dialog */}
       <Dialog open={showSavedMessages} onOpenChange={setShowSavedMessages}>

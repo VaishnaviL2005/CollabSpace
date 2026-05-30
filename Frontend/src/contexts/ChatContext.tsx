@@ -37,7 +37,9 @@ interface ChatContextType {
   highlightedMessageId: string | null;
   scrollToMessage: (messageId: string) => void;
   clearHighlight: () => void;
-  addNewDMConversation: (user: NewUserData) => void;
+  addNewDMConversation: (user: NewUserData) => Promise<boolean>;
+  createGroupConversation: (name: string, memberIds: string[]) => Promise<boolean>;
+  addGroupMembers: (chatId: string, memberIds: string[]) => Promise<boolean>;
   globalPresence: Record<string, string>;
 }
 
@@ -51,6 +53,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [globalPresence, setGlobalPresence] = useState<Record<string, string>>({});
+  const [conversationRevision, setConversationRevision] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const presenceWsRef = useRef<WebSocket | null>(null);
@@ -93,14 +96,16 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
         return existingConversation
           ? {
               ...conversation,
-              participants: conversation.participants.map(participant => {
-                const existingParticipant = existingConversation.participants.find(
-                  existing => existing.id === participant.id
-                );
-                return existingParticipant
-                  ? { ...participant, status: existingParticipant.status }
-                  : participant;
-              }),
+              participants: conversation.participants.length > 0
+                ? conversation.participants.map(participant => {
+                    const existingParticipant = existingConversation.participants.find(
+                      existing => existing.id === participant.id
+                    );
+                    return existingParticipant
+                      ? { ...participant, status: existingParticipant.status }
+                      : participant;
+                  })
+                : existingConversation.participants,
               messages: existingConversation.messages,
               unreadCount: existingConversation.unreadCount,
               lastMessage: existingConversation.lastMessage,
@@ -139,11 +144,43 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     } catch (e) {
       console.error("Failed fetching messages", e);
     }
-  }, [activeConversationId]);
+  }, [activeConversationId, conversationRevision]);
 
   useEffect(() => {
     loadMessagesForActiveConversation();
   }, [loadMessagesForActiveConversation]);
+
+  useEffect(() => {
+    const conversation = conversations.find(item => item.id === activeConversationId);
+    if (!conversation || conversation.type !== 'group') return;
+
+    let cancelled = false;
+    const loadGroupMembers = async () => {
+      try {
+        const members = await fetchWithAuth(`/chats/group/${conversation.id}/members`) || [];
+        if (cancelled) return;
+
+        const participants: User[] = members.map((member: any) => ({
+          id: member.id.toString(),
+          username: member.username,
+          displayName: member.username,
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${member.username}`,
+          status: (globalPresence[member.id.toString()] || 'offline') as User['status'],
+        }));
+
+        setConversations(prev => prev.map(item =>
+          item.id === conversation.id ? { ...item, participants } : item
+        ));
+      } catch (error) {
+        console.error('Failed loading group members', error);
+      }
+    };
+
+    loadGroupMembers();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationId]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -174,6 +211,12 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
                   : participant
               )
             })));
+          } else if (
+            data.type === 'conversations_changed' &&
+            data.user_ids?.includes(authUser.id)
+          ) {
+            setConversationRevision(prev => prev + 1);
+            loadConversations();
           } else if (data.type === 'ping') {
             pWs.send(JSON.stringify({ type: 'pong' }));
           }
@@ -192,7 +235,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       presenceWsRef.current?.close();
     };
-  }, [authUser]);
+  }, [authUser, loadConversations]);
 
   useEffect(() => {
     if (!activeConversationId || !authUser) return;
@@ -376,7 +419,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
 
     if (existingConversation) {
       setActiveConversationId(existingConversation.id);
-      return;
+      return true;
     }
 
     // API request to create direct chat
@@ -388,11 +431,47 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       if (res && res.chat_id) {
         await loadConversations();
         setActiveConversationId(res.chat_id.toString());
+        return true;
       }
     } catch (e) {
       console.error("Failed starting DM", e);
     }
+    return false;
   }, [conversations, loadConversations]);
+
+  const createGroupConversation = useCallback(async (name: string, memberIds: string[]) => {
+    try {
+      const res = await fetchWithAuth('/chats/group', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          member_ids: memberIds.map(memberId => parseInt(memberId)),
+        }),
+      });
+      if (res?.chat_id) {
+        await loadConversations();
+        setActiveConversationId(res.chat_id.toString());
+        return true;
+      }
+    } catch (e) {
+      console.error('Failed creating group', e);
+    }
+    return false;
+  }, [loadConversations]);
+
+  const addGroupMembers = useCallback(async (chatId: string, memberIds: string[]) => {
+    try {
+      await Promise.all(memberIds.map(memberId => fetchWithAuth(`/chats/group/${chatId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: parseInt(memberId) }),
+      })));
+      await loadConversations();
+      return true;
+    } catch (e) {
+      console.error('Failed adding group members', e);
+      return false;
+    }
+  }, [loadConversations]);
 
   return (
     <ChatContext.Provider value={{ 
@@ -410,6 +489,8 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       scrollToMessage,
       clearHighlight,
       addNewDMConversation,
+      createGroupConversation,
+      addGroupMembers,
       globalPresence,
     }}>
       {children}

@@ -14,7 +14,8 @@ import {
   Plus,
   Search,
   X,
-  Settings
+  Settings,
+  UserPlus
 } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -22,9 +23,20 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useChat } from '@/contexts/ChatContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api';
+import { toast } from 'sonner';
 
 interface UserSearchResult {
   id: string;
@@ -159,7 +171,25 @@ export default function AppSidebar() {
   const [dmSearchQuery, setDMSearchQuery] = useState('');
   const [userSearchResults, setUserSearchResults] = useState<UserSearchResult[]>([]);
   const [isSearchingUsers, setIsSearchingUsers] = useState(false);
-  const { conversations, activeConversation, setActiveConversation, addNewDMConversation, globalPresence } = useChat();
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [groupDialogMode, setGroupDialogMode] = useState<'create' | 'add'>('create');
+  const [targetGroup, setTargetGroup] = useState<{ id: string; name: string } | null>(null);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupMemberSearchQuery, setGroupMemberSearchQuery] = useState('');
+  const [groupMemberSearchResults, setGroupMemberSearchResults] = useState<UserSearchResult[]>([]);
+  const [existingGroupMemberIds, setExistingGroupMemberIds] = useState<string[]>([]);
+  const [selectedGroupMemberIds, setSelectedGroupMemberIds] = useState<string[]>([]);
+  const [isSearchingGroupMembers, setIsSearchingGroupMembers] = useState(false);
+  const [isSavingGroup, setIsSavingGroup] = useState(false);
+  const {
+    conversations,
+    activeConversation,
+    setActiveConversation,
+    addNewDMConversation,
+    createGroupConversation,
+    addGroupMembers,
+    globalPresence
+  } = useChat();
   const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -227,9 +257,122 @@ export default function AppSidebar() {
   }, [userSearchResults, globalPresence]);
 
   const handleSelectUser = (selectedUser: UserSearchResult) => {
-    addNewDMConversation(selectedUser);
+    addNewDMConversation(selectedUser).then(success => {
+      if (!success) toast.error('Could not open direct message');
+    });
     setShowUserSearch(false);
     setUserSearchQuery('');
+    navigate('/app');
+  };
+
+  useEffect(() => {
+    const query = groupMemberSearchQuery.trim();
+    if (!query || !groupDialogOpen) {
+      setGroupMemberSearchResults([]);
+      setIsSearchingGroupMembers(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setIsSearchingGroupMembers(true);
+      try {
+        const results = await fetchWithAuth(`/users/search?query=${encodeURIComponent(query)}`) || [];
+        if (!cancelled) {
+          setGroupMemberSearchResults(results.map((result: any) => ({
+            id: result.id.toString(),
+            username: result.username,
+            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.username}`,
+            status: 'offline',
+          })));
+        }
+      } catch (error) {
+        console.error('Failed searching group members', error);
+        if (!cancelled) setGroupMemberSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearchingGroupMembers(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [groupMemberSearchQuery, groupDialogOpen]);
+
+  const groupMemberResults = useMemo(() => (
+    groupMemberSearchResults
+      .map(result => ({
+        ...result,
+        isExistingMember: existingGroupMemberIds.includes(result.id),
+        status: (globalPresence[result.id] || result.status) as UserSearchResult['status'],
+      }))
+  ), [groupMemberSearchResults, existingGroupMemberIds, globalPresence]);
+
+  const resetGroupDialog = () => {
+    setTargetGroup(null);
+    setNewGroupName('');
+    setGroupMemberSearchQuery('');
+    setGroupMemberSearchResults([]);
+    setExistingGroupMemberIds([]);
+    setSelectedGroupMemberIds([]);
+    setIsSavingGroup(false);
+  };
+
+  const openCreateGroup = () => {
+    resetGroupDialog();
+    setGroupDialogMode('create');
+    setGroupDialogOpen(true);
+  };
+
+  const openAddGroupMembers = async (group: { id: string; name: string }) => {
+    resetGroupDialog();
+    setGroupDialogMode('add');
+    setTargetGroup(group);
+    setGroupDialogOpen(true);
+
+    try {
+      const members = await fetchWithAuth(`/chats/group/${group.id}/members`) || [];
+      setExistingGroupMemberIds(members.map((member: any) => member.id.toString()));
+    } catch (error) {
+      console.error('Failed loading group members', error);
+      toast.error('Could not load current group members');
+    }
+  };
+
+  const toggleGroupMember = (memberId: string) => {
+    setSelectedGroupMemberIds(prev =>
+      prev.includes(memberId)
+        ? prev.filter(id => id !== memberId)
+        : [...prev, memberId]
+    );
+  };
+
+  const handleSaveGroup = async () => {
+    const name = newGroupName.trim();
+    if (groupDialogMode === 'create' && !name) {
+      toast.error('Enter a group name');
+      return;
+    }
+    if (groupDialogMode === 'add' && (!targetGroup || selectedGroupMemberIds.length === 0)) {
+      toast.error('Select at least one member');
+      return;
+    }
+
+    setIsSavingGroup(true);
+    const success = groupDialogMode === 'create'
+      ? await createGroupConversation(name, selectedGroupMemberIds)
+      : await addGroupMembers(targetGroup!.id, selectedGroupMemberIds);
+    setIsSavingGroup(false);
+
+    if (!success) {
+      toast.error(groupDialogMode === 'create' ? 'Could not create group' : 'Could not add members');
+      return;
+    }
+
+    toast.success(groupDialogMode === 'create' ? 'Group created' : 'Members added');
+    setGroupDialogOpen(false);
+    resetGroupDialog();
     navigate('/app');
   };
 
@@ -292,7 +435,10 @@ export default function AppSidebar() {
                       variant="ghost" 
                       size="icon" 
                       className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={(e) => { e.stopPropagation(); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCreateGroup();
+                      }}
                     >
                       <Plus className="w-3 h-3" />
                     </Button>
@@ -332,19 +478,33 @@ export default function AppSidebar() {
               )}
               
               {filteredGroups.map(conv => (
-                <ChannelItem 
-                  key={conv.id}
-                  id={conv.id}
-                  name={conv.name} 
-                  unread={conv.unreadCount}
-                  isActive={isOnChatPage && activeConversation?.id === conv.id}
-                  onClick={() => {
-                    setActiveConversation(conv.id);
-                    if (location.pathname !== '/app') {
-                      navigate('/app');
-                    }
-                  }}
-                />
+                <div key={conv.id} className="flex items-center gap-1">
+                  <ChannelItem
+                    id={conv.id}
+                    name={conv.name}
+                    unread={conv.unreadCount}
+                    isActive={isOnChatPage && activeConversation?.id === conv.id}
+                    onClick={() => {
+                      setActiveConversation(conv.id);
+                      if (location.pathname !== '/app') {
+                        navigate('/app');
+                      }
+                    }}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 flex-shrink-0"
+                        onClick={() => openAddGroupMembers({ id: conv.id, name: conv.name })}
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Add members</TooltipContent>
+                  </Tooltip>
+                </div>
               ))}
               
               {showGroupSearch && filteredGroups.length === 0 && (
@@ -549,6 +709,98 @@ export default function AppSidebar() {
           </Tooltip>
         </div>
       </div>
+
+      <Dialog
+        open={groupDialogOpen}
+        onOpenChange={open => {
+          setGroupDialogOpen(open);
+          if (!open) resetGroupDialog();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {groupDialogMode === 'create' ? 'Create group' : `Add members to ${targetGroup?.name || 'group'}`}
+            </DialogTitle>
+            <DialogDescription>
+              Search users by username and select the people to include.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {groupDialogMode === 'create' && (
+              <div className="space-y-2">
+                <Label htmlFor="group-name">Group name</Label>
+                <Input
+                  id="group-name"
+                  value={newGroupName}
+                  onChange={event => setNewGroupName(event.target.value)}
+                  placeholder="Design team"
+                  maxLength={100}
+                />
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="group-member-search">Members</Label>
+              <Input
+                id="group-member-search"
+                value={groupMemberSearchQuery}
+                onChange={event => setGroupMemberSearchQuery(event.target.value)}
+                placeholder="Search username..."
+              />
+            </div>
+
+            <div className="max-h-52 overflow-y-auto rounded-md border">
+              {isSearchingGroupMembers ? (
+                <p className="p-4 text-center text-sm text-muted-foreground">Searching...</p>
+              ) : groupMemberResults.length > 0 ? (
+                groupMemberResults.map(result => (
+                  <label
+                    key={result.id}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2',
+                      result.isExistingMember ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-accent'
+                    )}
+                  >
+                    <Checkbox
+                      checked={selectedGroupMemberIds.includes(result.id)}
+                      disabled={result.isExistingMember}
+                      onCheckedChange={() => toggleGroupMember(result.id)}
+                    />
+                    <img src={result.avatar} alt={result.username} className="h-7 w-7 rounded-full" />
+                    <span className="flex-1 text-sm">{result.username}</span>
+                    {result.isExistingMember && (
+                      <span className="text-xs text-muted-foreground">Already a member</span>
+                    )}
+                    <span className={cn(
+                      'h-2 w-2 rounded-full',
+                      result.status === 'online' ? 'bg-status-online' : 'bg-muted-foreground'
+                    )} />
+                  </label>
+                ))
+              ) : (
+                <p className="p-4 text-center text-sm text-muted-foreground">
+                  {groupMemberSearchQuery.trim() ? 'No users found' : 'Search for users to add'}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGroupDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveGroup} disabled={isSavingGroup}>
+              {isSavingGroup
+                ? 'Saving...'
+                : groupDialogMode === 'create'
+                  ? 'Create group'
+                  : 'Add members'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </aside>
   );
 }

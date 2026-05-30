@@ -8,6 +8,7 @@ async def redis_listener():
     pubsub = redis_client.pubsub()
     await pubsub.psubscribe("chat:*")
     await pubsub.subscribe("global_presence")
+    await pubsub.subscribe("conversation_changes")
 
     async for message in pubsub.listen():
         if message["type"] not in ["pmessage", "message"]:
@@ -18,7 +19,7 @@ async def redis_listener():
         channel = message["channel"]
         channel_name = channel.decode('utf-8') if isinstance(channel, bytes) else channel
         
-        if channel_name == "global_presence":
+        if channel_name in ["global_presence", "conversation_changes"]:
             await presence_manager.broadcast_local(data)
         elif "chat_id" in data:
             # Send to LOCAL chat sockets only
