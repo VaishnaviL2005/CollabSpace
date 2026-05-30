@@ -3,3 +3,12 @@ Backend/app/schemas/__pycache__/
 Backend/app/routes/__pycache__/
 Backend/app/core/__pycache__/
 Backend/app/__pycache__/
+.vscode/
+__pycache__/
+*.pyc
+Backend/venv/
+Frontend/node_modules/
+Frontend/dist/
+Frontend/tsc_errors.txt
+Frontend/bun.lock
+Frontend/bun.lockb
