@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode, useCallback, useEffect, useRef } from 'react';
-import { Message, User } from '@/types';
+import { Message, User, MessageStatus } from '@/types';
 import { fetchWithAuth, WS_BASE_URL } from '@/lib/api';
 import { useAuth } from './AuthContext';
 
@@ -41,6 +41,8 @@ interface ChatContextType {
   createGroupConversation: (name: string, memberIds: string[]) => Promise<boolean>;
   addGroupMembers: (chatId: string, memberIds: string[]) => Promise<boolean>;
   globalPresence: Record<string, string>;
+  sendTypingEvent: () => void;
+  sendReadReceipt: (messageId: string) => void;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -57,6 +59,8 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
 
   const wsRef = useRef<WebSocket | null>(null);
   const presenceWsRef = useRef<WebSocket | null>(null);
+  const typingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const pendingReadReceipts = useRef<Set<string>>(new Set());
 
   const loadConversations = useCallback(async () => {
     if (!authUser) return;
@@ -250,6 +254,10 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
 
       ws.onopen = () => {
         console.log('WS Connected to chat', activeConversationId);
+        pendingReadReceipts.current.forEach(msgId => {
+          ws.send(JSON.stringify({ type: 'read_receipt', message_id: parseInt(msgId) }));
+        });
+        pendingReadReceipts.current.clear();
       };
 
       ws.onmessage = (event) => {
@@ -279,7 +287,14 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
               return { ...c, messages: nextMessages, lastMessage: newMessage };
             }
 
-            if (alreadyExists) return c;
+            if (alreadyExists) {
+               const nextMessages = c.messages.map(m => 
+                 m.id === newMessage.id && m.status === 'sent' 
+                   ? { ...m, status: 'delivered' as MessageStatus } 
+                   : m
+               );
+               return { ...c, messages: nextMessages };
+            }
 
             return {
               ...c,
@@ -287,6 +302,44 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
               lastMessage: newMessage,
               unreadCount: c.id === activeConversationId ? 0 : c.unreadCount + 1,
             };
+          }));
+        } else if (data.type === 'typing') {
+          if (data.user_id.toString() !== authUser.id) {
+            // Need to handle typing state via setTyping which is defined below. 
+            // We can just update the typingUsers state directly here.
+            setTypingUsers(prev => {
+              const userId = data.user_id.toString();
+              const filtered = prev.filter(id => id !== userId);
+              
+              if (typingTimeoutsRef.current[userId]) {
+                clearTimeout(typingTimeoutsRef.current[userId]);
+              }
+              typingTimeoutsRef.current[userId] = setTimeout(() => {
+                setTypingUsers(current => current.filter(id => id !== userId));
+              }, 3000);
+              
+              return [...filtered, userId];
+            });
+          }
+        } else if (data.type === 'read_receipt') {
+          setConversations(prev => prev.map(c => {
+            if (c.id !== data.chat_id?.toString()) return c;
+            
+            if (data.user_id.toString() !== authUser.id) {
+              const readMessageId = parseInt(data.message_id);
+              if (isNaN(readMessageId)) return c;
+              
+              const updatedMessages = c.messages.map(msg => {
+                const msgId = parseInt(msg.id);
+                if (msg.senderId === authUser.id && !isNaN(msgId) && msgId <= readMessageId && msg.status !== 'read') {
+                  return { ...msg, status: 'read' as MessageStatus };
+                }
+                return msg;
+              });
+              
+              return { ...c, messages: updatedMessages };
+            }
+            return c;
           }));
         } else if (data.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong' }));
@@ -403,13 +456,39 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     })));
   };
 
-  const setTyping = (userId: string, isTyping: boolean) => {
+  const setTyping = useCallback((userId: string, isTyping: boolean) => {
     if (isTyping) {
-      setTypingUsers(prev => [...prev.filter(id => id !== userId), userId]);
+      setTypingUsers(prev => {
+        const filtered = prev.filter(id => id !== userId);
+        if (typingTimeoutsRef.current[userId]) {
+          clearTimeout(typingTimeoutsRef.current[userId]);
+        }
+        typingTimeoutsRef.current[userId] = setTimeout(() => {
+          setTypingUsers(current => current.filter(id => id !== userId));
+        }, 3000);
+        return [...filtered, userId];
+      });
     } else {
       setTypingUsers(prev => prev.filter(id => id !== userId));
+      if (typingTimeoutsRef.current[userId]) {
+        clearTimeout(typingTimeoutsRef.current[userId]);
+      }
     }
-  };
+  }, []);
+
+  const sendTypingEvent = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'typing' }));
+    }
+  }, []);
+
+  const sendReadReceipt = useCallback((messageId: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'read_receipt', message_id: parseInt(messageId) }));
+    } else {
+      pendingReadReceipts.current.add(messageId);
+    }
+  }, []);
 
   const addNewDMConversation = useCallback(async (newUser: NewUserData) => {
     const existingConversation = conversations.find(conversation =>
@@ -492,6 +571,8 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       createGroupConversation,
       addGroupMembers,
       globalPresence,
+      sendTypingEvent,
+      sendReadReceipt,
     }}>
       {children}
     </ChatContext.Provider>

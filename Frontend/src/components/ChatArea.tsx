@@ -237,7 +237,9 @@ export default function ChatArea() {
     highlightedMessageId,
     clearHighlight,
     scrollToMessage,
-    globalPresence
+    globalPresence,
+    sendTypingEvent,
+    sendReadReceipt,
   } = useChat();
   const navigate = useNavigate();
   
@@ -251,6 +253,20 @@ export default function ChatArea() {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastTypingRef = useRef(0);
+  
+  // Mark messages as read
+  useEffect(() => {
+    if (!messages.length || !user) return;
+    
+    const lastForeignMessage = [...messages].reverse().find(
+      m => m.senderId !== user.id && !m.id.startsWith('temp-')
+    );
+    
+    if (lastForeignMessage) {
+      sendReadReceipt(lastForeignMessage.id);
+    }
+  }, [messages, user, sendReadReceipt]);
   
   useEffect(() => {
     if (!highlightedMessageId) {
@@ -281,6 +297,15 @@ export default function ChatArea() {
     setInputValue('');
     setReplyingTo(null);
     setAttachment(null);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInputValue(e.target.value);
+    const now = Date.now();
+    if (now - lastTypingRef.current > 2000) {
+      sendTypingEvent();
+      lastTypingRef.current = now;
+    }
   };
   
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -568,7 +593,7 @@ export default function ChatArea() {
             <Input
               placeholder={`Message ${chatName}...`}
               value={inputValue}
-              onChange={e => setInputValue(e.target.value)}
+              onChange={handleInputChange}
               onKeyPress={handleKeyPress}
               className="pr-20"
             />
