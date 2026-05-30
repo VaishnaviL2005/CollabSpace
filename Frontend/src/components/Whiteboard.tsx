@@ -76,9 +76,11 @@ export default function Whiteboard() {
   const [newStickyText, setNewStickyText] = useState('');
   const [showStickyInput, setShowStickyInput] = useState(false);
   const [stickyPosition, setStickyPosition] = useState({ x: 0, y: 0 });
+  const [startPos, setStartPos] = useState({ x: 0, y: 0 });
+  const savedImageRef = useRef<ImageData | null>(null);
 
   const startDrawing = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (activeTool !== 'pencil' && activeTool !== 'eraser') return;
+    if (activeTool === 'select' || activeTool === 'sticky' || activeTool === 'text') return;
     
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -89,6 +91,9 @@ export default function Whiteboard() {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    
+    savedImageRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    setStartPos({ x, y });
     
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -113,9 +118,26 @@ export default function Whiteboard() {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     
-    ctx.lineTo(x, y);
-    ctx.stroke();
-  }, [isDrawing]);
+    if (activeTool === 'pencil' || activeTool === 'eraser') {
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    } else if (activeTool === 'rectangle' || activeTool === 'circle' || activeTool === 'line') {
+      if (savedImageRef.current) {
+        ctx.putImageData(savedImageRef.current, 0, 0);
+      }
+      ctx.beginPath();
+      if (activeTool === 'line') {
+        ctx.moveTo(startPos.x, startPos.y);
+        ctx.lineTo(x, y);
+      } else if (activeTool === 'rectangle') {
+        ctx.rect(startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+      } else if (activeTool === 'circle') {
+        const radius = Math.sqrt(Math.pow(x - startPos.x, 2) + Math.pow(y - startPos.y, 2));
+        ctx.arc(startPos.x, startPos.y, radius, 0, 2 * Math.PI);
+      }
+      ctx.stroke();
+    }
+  }, [isDrawing, activeTool, startPos]);
 
   const stopDrawing = useCallback(() => {
     setIsDrawing(false);
@@ -125,7 +147,10 @@ export default function Whiteboard() {
     if (activeTool === 'sticky') {
       const rect = canvasRef.current?.getBoundingClientRect();
       if (rect) {
-        setStickyPosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+        setStickyPosition({ 
+          x: e.clientX - rect.left, 
+          y: e.clientY - rect.top 
+        });
         setShowStickyInput(true);
       }
     } else if (activeTool === 'text') {
@@ -165,23 +190,30 @@ export default function Whiteboard() {
     const note = stickyNotes.find(n => n.id === noteId);
     if (!note) return;
     
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    
     setDraggedNote(noteId);
     setDragOffset({
-      x: e.clientX - note.x,
-      y: e.clientY - note.y,
+      x: e.clientX - rect.left - note.x,
+      y: e.clientY - rect.top - note.y,
     });
   };
 
   const handleNoteDrag = useCallback((e: React.MouseEvent) => {
     if (!draggedNote) return;
     
-    const containerRect = canvasRef.current?.parentElement?.getBoundingClientRect();
-    if (!containerRect) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
     
     setStickyNotes(prev =>
       prev.map(note =>
         note.id === draggedNote
-          ? { ...note, x: e.clientX - containerRect.left - dragOffset.x, y: e.clientY - containerRect.top - dragOffset.y }
+          ? { 
+              ...note, 
+              x: e.clientX - rect.left - dragOffset.x, 
+              y: e.clientY - rect.top - dragOffset.y 
+            }
           : note
       )
     );
@@ -229,9 +261,9 @@ export default function Whiteboard() {
   return (
     <div className="h-full flex flex-col p-4">
       {/* Toolbar */}
-      <Card className="mb-4 p-2 flex items-center gap-2 flex-wrap">
+      <Card className="mb-4 p-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap">
         {/* Tools */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-shrink-0">
           {tools.map(tool => (
             <Tooltip key={tool.id}>
               <TooltipTrigger asChild>
@@ -255,7 +287,7 @@ export default function Whiteboard() {
         <Separator orientation="vertical" className="h-8" />
         
         {/* Colors */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-shrink-0">
           <Palette className="w-4 h-4 text-muted-foreground mr-1" />
           {colors.map(color => (
             <button
@@ -273,7 +305,7 @@ export default function Whiteboard() {
         <Separator orientation="vertical" className="h-8" />
         
         {/* Brush size */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-sm text-muted-foreground">Size:</span>
           <input
             type="range"
@@ -289,7 +321,7 @@ export default function Whiteboard() {
         <Separator orientation="vertical" className="h-8" />
         
         {/* Actions */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-shrink-0">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon" className="h-9 w-9">
@@ -337,16 +369,17 @@ export default function Whiteboard() {
       
       {/* Canvas area */}
       <div 
-        className="flex-1 relative bg-card rounded-xl border border-border overflow-hidden"
+        className="flex-1 relative bg-card rounded-xl border border-border overflow-auto"
         onMouseMove={handleNoteDrag}
         onMouseUp={handleNoteDragEnd}
         onMouseLeave={handleNoteDragEnd}
       >
-        <canvas
-          ref={canvasRef}
-          width={1200}
-          height={800}
-          className="absolute inset-0 w-full h-full cursor-crosshair"
+        <div className="relative min-w-[1200px] min-h-[800px] h-full" style={{ width: '100%', height: '100%' }}>
+          <canvas
+            ref={canvasRef}
+            width={1200}
+            height={800}
+            className="absolute inset-0 w-full h-full cursor-crosshair bg-white"
           style={{ 
             cursor: activeTool === 'pencil' ? 'crosshair' : 
                    activeTool === 'eraser' ? 'cell' : 
@@ -424,6 +457,7 @@ export default function Whiteboard() {
           </defs>
           <rect width="100%" height="100%" fill="url(#grid)" />
         </svg>
+        </div>
       </div>
     </div>
   );
