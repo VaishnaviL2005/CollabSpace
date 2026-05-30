@@ -77,6 +77,7 @@ async def chat_ws(
 ):
     await websocket.accept()
     db: Session = SessionLocal()
+    user: User | None = None
 
     try:
         # Decode JWT
@@ -182,6 +183,7 @@ async def chat_ws(
                     "type": "message",
                     "chat_id": chat_id,
                     "id": message.id,
+                    "client_id": data.get("client_id"),
                     "user_id": user.id,
                     "username": user.username,
                     "message": message.content,
@@ -193,14 +195,15 @@ async def chat_ws(
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        leave_payload = {
-            "type": "presence",
-            "chat_id": chat_id,
-            "user_id": user.id,
-            "username": user.username,
-            "status": "offline"
-        }
-        await redis_client.publish(f"chat:{chat_id}", json.dumps(leave_payload))
+        if user:
+            leave_payload = {
+                "type": "presence",
+                "chat_id": chat_id,
+                "user_id": user.id,
+                "username": user.username,
+                "status": "offline"
+            }
+            await redis_client.publish(f"chat:{chat_id}", json.dumps(leave_payload))
 
     finally:
         manager.disconnect(websocket)

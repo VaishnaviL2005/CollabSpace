@@ -15,6 +15,7 @@ class MessageResponse(BaseModel):
 class MessageCreate(BaseModel):
     chat_id: int
     content: str = Field(..., min_length=1, max_length=5000)
+    client_id: str | None = None
 
 class PaginatedMessageResponse(BaseModel):
     messages: list[MessageResponse]

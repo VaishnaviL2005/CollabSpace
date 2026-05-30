@@ -1,6 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from jose import jwt, JWTError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 from typing import Dict
 import json
 import time
@@ -21,9 +22,15 @@ class PresenceManager:
     async def connect(self, user_id: int, websocket: WebSocket):
         self.active_connections[websocket] = {"user_id": user_id, "last_pong": time.time()}
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            del self.active_connections[websocket]
+    def disconnect(self, websocket: WebSocket) -> int | None:
+        connection = self.active_connections.pop(websocket, None)
+        return connection["user_id"] if connection else None
+
+    def is_online(self, user_id: int) -> bool:
+        return any(
+            connection["user_id"] == user_id
+            for connection in self.active_connections.values()
+        )
 
     def update_pong(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -34,7 +41,30 @@ class PresenceManager:
             try:
                 await ws.send_json(message)
             except Exception:
-                self.disconnect(ws)
+                try:
+                    await ws.close(code=1008)
+                except Exception:
+                    pass
+
+    async def heartbeat(self):
+        while True:
+            await asyncio.sleep(30)
+            now = time.time()
+            stale_sockets = []
+            for ws, data in list(self.active_connections.items()):
+                if now - data["last_pong"] > 65:
+                    stale_sockets.append(ws)
+                else:
+                    try:
+                        await ws.send_json({"type": "ping"})
+                    except Exception:
+                        stale_sockets.append(ws)
+
+            for ws in stale_sockets:
+                try:
+                    await ws.close(code=1008)
+                except Exception:
+                    pass
 
 manager = PresenceManager()
 
@@ -45,6 +75,7 @@ async def presence_ws(
 ):
     await websocket.accept()
     db: Session = SessionLocal()
+    user: User | None = None
 
     try:
         payload = jwt.decode(
@@ -62,12 +93,14 @@ async def presence_ws(
             await websocket.close(code=1008)
             return
 
-        # Update DB Last Seen
-        user.status = "online"
-        db.commit()
-
         # Register Connection
+        was_online = manager.is_online(user.id)
         await manager.connect(user.id, websocket)
+
+        # Update DB status on the first active connection.
+        if not was_online:
+            user.status = "online"
+            db.commit()
 
         # Send current online users to this new connection
         online_users = db.query(User).filter(User.status != "offline").all()
@@ -78,13 +111,14 @@ async def presence_ws(
                 "status": ou.status
             })
 
-        # Notify network about THIS user coming online
-        presence_payload = {
-            "type": "global_presence",
-            "user_id": str(user.id),
-            "status": "online"
-        }
-        await redis_client.publish("global_presence", json.dumps(presence_payload))
+        # Notify the network only when the user transitions online.
+        if not was_online:
+            presence_payload = {
+                "type": "global_presence",
+                "user_id": str(user.id),
+                "status": "online"
+            }
+            await redis_client.publish("global_presence", json.dumps(presence_payload))
 
         while True:
             text = await websocket.receive_text()
@@ -96,15 +130,18 @@ async def presence_ws(
                 pass
 
     except WebSocketDisconnect:
-        user.status = "offline"
-        db.commit()
-        manager.disconnect(websocket)
-        presence_payload = {
-            "type": "global_presence",
-            "user_id": str(user.id),
-            "status": "offline"
-        }
-        await redis_client.publish("global_presence", json.dumps(presence_payload))
+        pass
 
     finally:
+        disconnected_user_id = manager.disconnect(websocket)
+        if user and disconnected_user_id and not manager.is_online(user.id):
+            user.status = "offline"
+            user.last_seen = func.now()
+            db.commit()
+            presence_payload = {
+                "type": "global_presence",
+                "user_id": str(user.id),
+                "status": "offline"
+            }
+            await redis_client.publish("global_presence", json.dumps(presence_payload))
         db.close()

@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, File, UploadFile, Form
 from sqlalchemy.orm import Session
-import shutil
-import uuid
-import os
+import json
 from pyrate_limiter import Duration, Limiter, Rate  # KEEP THIS
 
+from app.core.redis import redis_client
 from app.db.session import get_db
 from app.models.message import Message
 from app.models.chat_member import ChatMember
@@ -70,7 +69,7 @@ def get_messages(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(RateLimiter(limiter=Limiter(Rate(10, Duration.SECOND * 60))))]
 )
-def send_message(
+async def send_message(
     data: MessageCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -101,5 +100,21 @@ def send_message(
     db.add(message)
     db.commit()
     db.refresh(message)
+
+    await redis_client.publish(
+        f"chat:{data.chat_id}",
+        json.dumps({
+            "type": "message",
+            "chat_id": data.chat_id,
+            "id": message.id,
+            "client_id": data.client_id,
+            "user_id": current_user.id,
+            "username": current_user.username,
+            "message": message.content,
+            "message_type": message.message_type,
+            "file_url": message.file_url,
+            "created_at": message.created_at.isoformat()
+        })
+    )
 
     return message

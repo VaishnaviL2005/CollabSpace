@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { 
@@ -24,16 +24,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useChat } from '@/contexts/ChatContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { fetchWithAuth } from '@/lib/api';
 
-// Demo users for search
-const allDemoUsers = [
-  { id: 'nick', username: 'nick', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=nick', status: 'online' as const },
-  { id: 'pernick', username: 'pernick', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=pernick', status: 'away' as const },
-  { id: 'nick_jonas', username: 'nick_jonas', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=nick_jonas', status: 'online' as const },
-  { id: 'mernick', username: 'mernick', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=mernick', status: 'offline' as const },
-  { id: 'sarah', username: 'sarah', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=sarah', status: 'online' as const },
-  { id: 'john_doe', username: 'john_doe', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=john', status: 'dnd' as const },
-];
+interface UserSearchResult {
+  id: string;
+  username: string;
+  avatar: string;
+  status: 'online' | 'away' | 'dnd' | 'offline';
+}
 
 interface NavItemProps {
   to: string;
@@ -159,6 +157,8 @@ export default function AppSidebar() {
   const [groupSearchQuery, setGroupSearchQuery] = useState('');
   const [showDMSearch, setShowDMSearch] = useState(false);
   const [dmSearchQuery, setDMSearchQuery] = useState('');
+  const [userSearchResults, setUserSearchResults] = useState<UserSearchResult[]>([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
   const { conversations, activeConversation, setActiveConversation, addNewDMConversation, globalPresence } = useChat();
   const { user } = useAuth();
   const location = useLocation();
@@ -183,19 +183,50 @@ export default function AppSidebar() {
     return dmConversations.filter(c => c.name.toLowerCase().includes(query));
   }, [dmSearchQuery, dmConversations]);
 
-  // Filter users based on search query (substring match) for adding new DM
-  const filteredUsers = useMemo(() => {
-    if (!userSearchQuery.trim()) return [];
-    const query = userSearchQuery.toLowerCase();
-    // Exclude users already in DMs
-    const existingDMUsernames = dmConversations.map(c => c.name.toLowerCase());
-    return allDemoUsers.filter(u => 
-      u.username.toLowerCase().includes(query) && 
-      !existingDMUsernames.includes(u.username.toLowerCase())
-    );
-  }, [userSearchQuery, dmConversations]);
+  useEffect(() => {
+    const query = userSearchQuery.trim();
+    if (!query) {
+      setUserSearchResults([]);
+      setIsSearchingUsers(false);
+      return;
+    }
 
-  const handleSelectUser = (selectedUser: typeof allDemoUsers[0]) => {
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setIsSearchingUsers(true);
+      try {
+        const results = await fetchWithAuth(`/users/search?query=${encodeURIComponent(query)}`) || [];
+        if (!cancelled) {
+          setUserSearchResults(results.map((result: any) => ({
+            id: result.id.toString(),
+            username: result.username,
+            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.username}`,
+            status: 'offline',
+          })));
+        }
+      } catch (error) {
+        console.error('Failed searching users', error);
+        if (!cancelled) setUserSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearchingUsers(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [userSearchQuery]);
+
+  const filteredUsers = useMemo(() => {
+    return userSearchResults
+      .map(u => ({
+        ...u,
+        status: (globalPresence[u.id] || u.status) as UserSearchResult['status'],
+      }));
+  }, [userSearchResults, globalPresence]);
+
+  const handleSelectUser = (selectedUser: UserSearchResult) => {
     addNewDMConversation(selectedUser);
     setShowUserSearch(false);
     setUserSearchQuery('');
@@ -424,7 +455,11 @@ export default function AppSidebar() {
                   {/* Search Results Dropdown */}
                   {userSearchQuery.trim() && (
                     <div className="bg-popover border border-border rounded-lg shadow-lg overflow-hidden">
-                      {filteredUsers.length > 0 ? (
+                      {isSearchingUsers ? (
+                        <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+                          Searching...
+                        </div>
+                      ) : filteredUsers.length > 0 ? (
                         <div className="max-h-40 overflow-y-auto">
                           {filteredUsers.map(u => (
                             <button

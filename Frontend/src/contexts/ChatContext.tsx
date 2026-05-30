@@ -19,8 +19,8 @@ export interface Conversation {
 interface NewUserData {
   id: string;
   username: string;
-  avatar: string;
-  status: 'online' | 'away' | 'dnd' | 'offline';
+  avatar?: string;
+  status?: 'online' | 'away' | 'dnd' | 'offline';
 }
 
 interface ChatContextType {
@@ -88,7 +88,25 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
         unreadCount: 0,
       })));
 
-      setConversations(allConvs);
+      setConversations(prev => allConvs.map(conversation => {
+        const existingConversation = prev.find(existing => existing.id === conversation.id);
+        return existingConversation
+          ? {
+              ...conversation,
+              participants: conversation.participants.map(participant => {
+                const existingParticipant = existingConversation.participants.find(
+                  existing => existing.id === participant.id
+                );
+                return existingParticipant
+                  ? { ...participant, status: existingParticipant.status }
+                  : participant;
+              }),
+              messages: existingConversation.messages,
+              unreadCount: existingConversation.unreadCount,
+              lastMessage: existingConversation.lastMessage,
+            }
+          : conversation;
+      }));
       if (allConvs.length > 0 && !activeConversationId) {
         setActiveConversationId(allConvs[0].id);
       }
@@ -114,7 +132,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
           status: 'sent',
           messageType: m.message_type,
           fileUrl: m.file_url,
-        })).reverse();
+        }));
         
         setConversations(prev => prev.map(c => c.id === activeConversationId ? { ...c, messages: mapped, lastMessage: mapped[mapped.length - 1] } : c));
       }
@@ -130,71 +148,119 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
   useEffect(() => {
     if (!authUser) return;
 
-    // Connect Global Presence WebSocket
     const token = localStorage.getItem('collab-token');
-    const pWs = new WebSocket(`${WS_BASE_URL}/ws/presence?token=${token}`);
-    
-    pWs.onopen = () => console.log('Connected to global presence WS');
-    
-    pWs.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'global_presence') {
-          setGlobalPresence(prev => ({
-            ...prev,
-            [data.user_id]: data.status
-          }));
-        } else if (data.type === 'ping') {
-          pWs.send(JSON.stringify({ type: 'pong' }));
-        }
-      } catch (e) {}
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+
+    const connect = () => {
+      const pWs = new WebSocket(`${WS_BASE_URL}/ws/presence?token=${token}`);
+      presenceWsRef.current = pWs;
+
+      pWs.onopen = () => console.log('Connected to global presence WS');
+
+      pWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'global_presence') {
+            setGlobalPresence(prev => ({
+              ...prev,
+              [data.user_id]: data.status
+            }));
+            setConversations(prev => prev.map(conversation => ({
+              ...conversation,
+              participants: conversation.participants.map(participant =>
+                participant.id === data.user_id
+                  ? { ...participant, status: data.status }
+                  : participant
+              )
+            })));
+          } else if (data.type === 'ping') {
+            pWs.send(JSON.stringify({ type: 'pong' }));
+          }
+        } catch (e) {}
+      };
+
+      pWs.onclose = () => {
+        if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+      };
     };
 
-    presenceWsRef.current = pWs;
+    connect();
 
     return () => {
-      pWs.close();
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      presenceWsRef.current?.close();
     };
   }, [authUser]);
 
   useEffect(() => {
     if (!activeConversationId || !authUser) return;
 
-    // Connect WebSocket
     const token = localStorage.getItem('collab-token');
-    const ws = new WebSocket(`${WS_BASE_URL}/ws/chat/${activeConversationId}?token=${token}`);
-    
-    ws.onopen = () => {
-      console.log('WS Connected to chat', activeConversationId);
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+
+    const connect = () => {
+      const ws = new WebSocket(`${WS_BASE_URL}/ws/chat/${activeConversationId}?token=${token}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('WS Connected to chat', activeConversationId);
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'message') {
+          const newMessage: Message = {
+            id: data.id.toString(),
+            senderId: data.user_id.toString(),
+            content: data.message || '',
+            timestamp: new Date(data.created_at || Date.now()),
+            status: 'delivered',
+            messageType: data.message_type,
+            fileUrl: data.file_url,
+          };
+
+          setConversations(prev => prev.map(c => {
+            if (c.id !== data.chat_id?.toString()) return c;
+
+            const optimisticIndex = data.client_id
+              ? c.messages.findIndex(message => message.id === data.client_id)
+              : -1;
+            const alreadyExists = c.messages.some(message => message.id === newMessage.id);
+
+            if (optimisticIndex >= 0) {
+              const nextMessages = [...c.messages];
+              nextMessages[optimisticIndex] = newMessage;
+              return { ...c, messages: nextMessages, lastMessage: newMessage };
+            }
+
+            if (alreadyExists) return c;
+
+            return {
+              ...c,
+              messages: [...c.messages, newMessage],
+              lastMessage: newMessage,
+              unreadCount: c.id === activeConversationId ? 0 : c.unreadCount + 1,
+            };
+          }));
+        } else if (data.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong' }));
+        }
+      };
+
+      ws.onclose = () => {
+        if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+      };
     };
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'message') {
-        const newMessage: Message = {
-          id: data.id.toString(),
-          senderId: data.user_id.toString(),
-          content: data.message || '',
-          timestamp: new Date(data.created_at || Date.now()),
-          status: 'delivered',
-          messageType: data.message_type,
-          fileUrl: data.file_url,
-        };
-
-        setConversations(prev => prev.map(c => 
-          c.id === data.chat_id?.toString()
-            ? { ...c, messages: [...c.messages, newMessage], lastMessage: newMessage }
-            : c
-        ));
-      } else if (data.type === 'ping') {
-        ws.send(JSON.stringify({ type: 'pong' }));
-      }
-    };
-
-    wsRef.current = ws;
+    connect();
 
     return () => {
-      ws.close();
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
     };
   }, [activeConversationId, authUser]);
 
@@ -230,10 +296,10 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
   const addMessage = async (messageData: Omit<Message, 'id' | 'timestamp'>) => {
     if (!activeConversationId || !authUser) return;
     
-    // First save the message optimistic behavior in UI, then post to API
+    const clientId = `temp-${crypto.randomUUID()}`;
     const optimisticMsg: Message = {
       ...messageData,
-      id: `temp-${Date.now()}`,
+      id: clientId,
       timestamp: new Date(),
       status: 'sending'
     };
@@ -245,18 +311,43 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     ));
 
     try {
-      await fetchWithAuth('/messages', {
+      const savedMessage = await fetchWithAuth('/messages', {
         method: 'POST',
         body: JSON.stringify({
           chat_id: parseInt(activeConversationId),
-          content: messageData.content
-        })
+          client_id: clientId,
+          content: messageData.content,
+        }),
       });
-      // WebSockets will echo it back to us, so the optimistic message might double.
-      // Usually you filter duplicates by comparing something or replacing the temp id.
-      // For simplicity, we just let the WS do the final update.
-    } catch(e) {
-      console.error("Failed sending message", e);
+
+      if (savedMessage) {
+        const persistedMessage: Message = {
+          id: savedMessage.id.toString(),
+          senderId: savedMessage.sender_id.toString(),
+          content: savedMessage.content || '',
+          timestamp: new Date(savedMessage.created_at || Date.now()),
+          status: 'sent',
+          messageType: savedMessage.message_type,
+          fileUrl: savedMessage.file_url,
+        };
+
+        setConversations(prev => prev.map(c => {
+          if (c.id !== activeConversationId) return c;
+
+          const optimisticIndex = c.messages.findIndex(message => message.id === clientId);
+          if (optimisticIndex < 0) return c;
+
+          const nextMessages = [...c.messages];
+          nextMessages[optimisticIndex] = persistedMessage;
+          return { ...c, messages: nextMessages, lastMessage: persistedMessage };
+        }));
+      }
+    } catch (error) {
+      console.error('Failed sending message', error);
+      setConversations(prev => prev.map(c => ({
+        ...c,
+        messages: c.messages.filter(message => message.id !== clientId),
+      })));
     }
   };
 
@@ -278,6 +369,16 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
   };
 
   const addNewDMConversation = useCallback(async (newUser: NewUserData) => {
+    const existingConversation = conversations.find(conversation =>
+      conversation.type === 'dm' &&
+      conversation.participants.some(participant => participant.id === newUser.id)
+    );
+
+    if (existingConversation) {
+      setActiveConversationId(existingConversation.id);
+      return;
+    }
+
     // API request to create direct chat
     try {
       const res = await fetchWithAuth('/chats/direct', {
@@ -291,7 +392,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     } catch (e) {
       console.error("Failed starting DM", e);
     }
-  }, [loadConversations]);
+  }, [conversations, loadConversations]);
 
   return (
     <ChatContext.Provider value={{ 

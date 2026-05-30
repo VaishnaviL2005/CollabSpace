@@ -16,17 +16,20 @@ from app.routes.meeting_ws import router as meeting_ws_router
 from app.routes.presence_ws import router as presence_ws_router
 
 from app.routes.ws import manager
+from app.routes.presence_ws import manager as presence_manager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(redis_listener())
     heartbeat_task = asyncio.create_task(manager.heartbeat())
+    presence_heartbeat_task = asyncio.create_task(presence_manager.heartbeat())
     
     yield
     
     # Cleanup
     task.cancel()
     heartbeat_task.cancel()
+    presence_heartbeat_task.cancel()
 
 app = FastAPI(
     title="CollabSpace Backend",

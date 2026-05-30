@@ -235,7 +235,8 @@ export default function ChatArea() {
     conversations,
     highlightedMessageId,
     clearHighlight,
-    scrollToMessage
+    scrollToMessage,
+    globalPresence
   } = useChat();
   const navigate = useNavigate();
   
@@ -355,7 +356,9 @@ export default function ChatArea() {
   const isGroup = activeConversation.type === 'group';
   const chatName = isGroup ? `#${activeConversation.name}` : activeConversation.name;
   const chatAvatar = isGroup ? undefined : activeConversation.avatar;
-  const participantStatus = !isGroup && activeConversation.participants[0]?.status;
+  const participantStatus = !isGroup && activeConversation.participants[0]
+    ? globalPresence[activeConversation.participants[0].id] || activeConversation.participants[0].status
+    : undefined;
 
   return (
     <div className="flex-1 flex flex-col h-full bg-background">
