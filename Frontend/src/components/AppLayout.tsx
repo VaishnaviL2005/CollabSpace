@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ChatProvider } from '@/contexts/ChatContext';
 import AppSidebar from '@/components/AppSidebar';
 import AppHeader from '@/components/AppHeader';
+import CallOverlay from '@/components/CallOverlay';
 
 const pageTitles: { [key: string]: string } = {
   '/app': 'Messages',
@@ -35,6 +36,7 @@ export default function AppLayout() {
             <Outlet />
           </main>
         </div>
+        <CallOverlay />
       </div>
     </ChatProvider>
   );

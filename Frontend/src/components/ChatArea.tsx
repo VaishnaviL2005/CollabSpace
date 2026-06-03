@@ -49,6 +49,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import VideoCall from './VideoCall';
 
 function TypingIndicator({ username, avatar }: { username: string; avatar?: string }) {
   return (
@@ -240,6 +241,9 @@ export default function ChatArea() {
     globalPresence,
     sendTypingEvent,
     sendReadReceipt,
+    activeVideoCallChatId,
+    startVideoCall,
+    endVideoCall,
   } = useChat();
   const navigate = useNavigate();
   
@@ -250,7 +254,17 @@ export default function ChatArea() {
   const [attachment, setAttachment] = useState<File | null>(null);
   const [showSavedMessages, setShowSavedMessages] = useState(false);
   const [showConversationDetails, setShowConversationDetails] = useState(false);
-  
+
+  const handleStartVideoCall = async () => {
+    if (!activeConversation) return;
+    const didRing = await startVideoCall(activeConversation.id);
+    if (didRing) {
+      toast.success("Ringing participants...");
+    } else {
+      toast.error("Failed to ring participants");
+    }
+  };
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastTypingRef = useRef(0);
@@ -454,7 +468,7 @@ export default function ChatArea() {
                   <Button 
                     variant="ghost" 
                     size="icon"
-                    onClick={() => toast.info('Starting video call...')}
+                    onClick={handleStartVideoCall}
                   >
                     <Video className="w-4 h-4" />
                   </Button>
@@ -504,15 +518,22 @@ export default function ChatArea() {
         </div>
       </div>
       
-      {/* Messages area - scrollable */}
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="py-4">
-          {filteredMessages.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <p>No messages yet. Start the conversation!</p>
-            </div>
-          ) : (
-            filteredMessages.map(message => {
+      {activeVideoCallChatId === activeConversation.id ? (
+        <VideoCall 
+          chatId={activeConversation.id} 
+          onDisconnect={() => void endVideoCall(activeConversation.id)} 
+        />
+      ) : (
+        <>
+          {/* Messages area - scrollable */}
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="py-4">
+              {filteredMessages.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p>No messages yet. Start the conversation!</p>
+                </div>
+              ) : (
+                filteredMessages.map(message => {
               const sender = getMessageSender(message.senderId);
               return (
                 <MessageBubble
@@ -638,6 +659,8 @@ export default function ChatArea() {
           </Tooltip>
         </div>
       </div>
+      </>
+      )}
 
       <Dialog open={showConversationDetails} onOpenChange={setShowConversationDetails}>
         <DialogContent className="max-w-md">

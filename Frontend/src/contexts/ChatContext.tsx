@@ -43,6 +43,13 @@ interface ChatContextType {
   globalPresence: Record<string, string>;
   sendTypingEvent: () => void;
   sendReadReceipt: (messageId: string) => void;
+  incomingCall: any;
+  setIncomingCall: (call: any) => void;
+  activeVideoCallChatId: string | null;
+  startVideoCall: (chatId: string) => Promise<boolean>;
+  acceptIncomingCall: () => void;
+  declineIncomingCall: () => Promise<void>;
+  endVideoCall: (chatId?: string) => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -56,6 +63,8 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [globalPresence, setGlobalPresence] = useState<Record<string, string>>({});
   const [conversationRevision, setConversationRevision] = useState(0);
+  const [incomingCall, setIncomingCall] = useState<any>(null);
+  const [activeVideoCallChatId, setActiveVideoCallChatId] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const presenceWsRef = useRef<WebSocket | null>(null);
@@ -221,6 +230,19 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
           ) {
             setConversationRevision(prev => prev + 1);
             loadConversations();
+          } else if (
+            data.type === 'incoming_call' &&
+            data.caller_id?.toString() !== authUser.id.toString() &&
+            data.target_user_ids?.map((id: unknown) => id?.toString()).includes(authUser.id.toString())
+          ) {
+            setIncomingCall(data);
+          } else if (
+            (data.type === 'call_ended' || data.type === 'call_declined') &&
+            data.target_user_ids?.map((id: unknown) => id?.toString()).includes(authUser.id.toString())
+          ) {
+            const chatId = data.chat_id?.toString();
+            setIncomingCall(prev => prev?.chat_id?.toString() === chatId ? null : prev);
+            setActiveVideoCallChatId(prev => prev === chatId ? null : prev);
           } else if (data.type === 'ping') {
             pWs.send(JSON.stringify({ type: 'pong' }));
           }
@@ -490,6 +512,50 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     }
   }, []);
 
+  const startVideoCall = useCallback(async (chatId: string) => {
+    try {
+      await fetchWithAuth(`/chats/${chatId}/ring`, { method: 'POST' });
+      setActiveVideoCallChatId(chatId);
+      return true;
+    } catch (e) {
+      console.error('Failed ringing participants', e);
+      setActiveVideoCallChatId(chatId);
+      return false;
+    }
+  }, []);
+
+  const acceptIncomingCall = useCallback(() => {
+    if (!incomingCall?.chat_id) return;
+    const chatId = incomingCall.chat_id.toString();
+    setActiveConversationId(chatId);
+    setActiveVideoCallChatId(chatId);
+    setIncomingCall(null);
+  }, [incomingCall]);
+
+  const declineIncomingCall = useCallback(async () => {
+    const chatId = incomingCall?.chat_id?.toString();
+    setIncomingCall(null);
+    if (!chatId) return;
+
+    try {
+      await fetchWithAuth(`/chats/${chatId}/call/decline`, { method: 'POST' });
+    } catch (e) {
+      console.error('Failed sending call decline', e);
+    }
+  }, [incomingCall]);
+
+  const endVideoCall = useCallback(async (chatId?: string) => {
+    const endingChatId = chatId || activeVideoCallChatId;
+    setActiveVideoCallChatId(null);
+    if (!endingChatId) return;
+
+    try {
+      await fetchWithAuth(`/chats/${endingChatId}/call/end`, { method: 'POST' });
+    } catch (e) {
+      console.error('Failed sending call end', e);
+    }
+  }, [activeVideoCallChatId]);
+
   const addNewDMConversation = useCallback(async (newUser: NewUserData) => {
     const existingConversation = conversations.find(conversation =>
       conversation.type === 'dm' &&
@@ -573,6 +639,13 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       globalPresence,
       sendTypingEvent,
       sendReadReceipt,
+      incomingCall,
+      setIncomingCall,
+      activeVideoCallChatId,
+      startVideoCall,
+      acceptIncomingCall,
+      declineIncomingCall,
+      endVideoCall,
     }}>
       {children}
     </ChatContext.Provider>

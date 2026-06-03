@@ -13,6 +13,12 @@ import json
 from app.core.redis import redis_client
 from app.schemas.chat import GroupChatCreate, GroupChatResponse , GroupChatListItem , GroupChatSearchItem,AddGroupMember 
 from app.schemas.user import UserSearchResponse
+from app.core.config import settings
+import os
+from livekit import api
+from dotenv import load_dotenv
+
+load_dotenv()
 
 router = APIRouter(prefix="/chats", tags=["Chats"])
 
@@ -24,6 +30,46 @@ async def publish_conversation_change(user_ids: list[int]):
             "user_ids": [str(user_id) for user_id in set(user_ids)]
         })
     )
+
+async def publish_call_event(
+    chat_id: int,
+    event_type: str,
+    current_user: User,
+    db: Session,
+):
+    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    members = (
+        db.query(ChatMember)
+        .filter(ChatMember.chat_id == chat_id)
+        .all()
+    )
+
+    is_member = any(member.user_id == current_user.id for member in members)
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not a member of this chat")
+
+    target_user_ids = [
+        str(member.user_id)
+        for member in members
+        if member.user_id != current_user.id
+    ]
+
+    payload = {
+        "type": event_type,
+        "chat_id": chat_id,
+        "chat_name": chat.name,
+        "is_group": chat.type == "group",
+        "caller_id": str(current_user.id),
+        "caller_name": current_user.username,
+        "caller_avatar": current_user.avatar_url,
+        "target_user_ids": target_user_ids
+    }
+
+    await redis_client.publish("global_presence", json.dumps(payload))
+    return {"status": event_type, "targets": len(target_user_ids)}
 
 @router.get(
     "/direct",
@@ -310,3 +356,65 @@ def get_group_members(
         .filter(ChatMember.chat_id == chat_id)
         .all()
     )
+
+@router.get(
+    "/{chat_id}/livekit-token"
+)
+async def get_livekit_token(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    is_member = (
+        db.query(ChatMember)
+        .filter(
+            ChatMember.chat_id == chat_id,
+            ChatMember.user_id == current_user.id
+        )
+        .first()
+    )
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not a member of this chat")
+
+    api_key = settings.LIVEKIT_API_KEY
+    api_secret = settings.LIVEKIT_API_SECRET
+    livekit_url = settings.LIVEKIT_URL
+
+    if not livekit_url or not api_key or not api_secret:
+        raise HTTPException(status_code=500, detail="LiveKit credentials not configured in backend")
+
+    grant = api.VideoGrants(room_join=True, room=f"chat-{chat_id}")
+    
+    access_token = api.AccessToken(api_key, api_secret)
+    access_token.with_identity(str(current_user.id))
+    access_token.with_name(current_user.username)
+    access_token.with_grants(grant)
+
+    return {
+        "token": access_token.to_jwt(),
+        "url": livekit_url
+    }
+
+@router.post("/{chat_id}/ring")
+async def ring_chat(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await publish_call_event(chat_id, "incoming_call", current_user, db)
+
+@router.post("/{chat_id}/call/end")
+async def end_call(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await publish_call_event(chat_id, "call_ended", current_user, db)
+
+@router.post("/{chat_id}/call/decline")
+async def decline_call(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await publish_call_event(chat_id, "call_declined", current_user, db)
