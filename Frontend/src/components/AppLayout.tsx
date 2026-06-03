@@ -10,7 +10,6 @@ const pageTitles: { [key: string]: string } = {
   '/app': 'Messages',
   '/app/saved': 'Saved Messages',
   '/app/tasks': 'Personal Tasks',
-  '/app/meetings': 'Video Meetings',
   '/app/whiteboard': 'Whiteboard',
   '/app/analytics': 'Analytics',
 };

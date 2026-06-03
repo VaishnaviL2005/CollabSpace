@@ -4,7 +4,6 @@ import { cn } from '@/lib/utils';
 import { 
   Bookmark, 
   CheckSquare, 
-  Video, 
   Palette, 
   BarChart3,
   Hash,
@@ -230,8 +229,8 @@ export default function AppSidebar() {
           setUserSearchResults(results.map((result: any) => ({
             id: result.id.toString(),
             username: result.username,
-            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.username}`,
-            status: 'offline',
+            avatar: result.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.username}`,
+            status: result.status || 'offline',
           })));
         }
       } catch (error) {
@@ -282,8 +281,8 @@ export default function AppSidebar() {
           setGroupMemberSearchResults(results.map((result: any) => ({
             id: result.id.toString(),
             username: result.username,
-            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.username}`,
-            status: 'offline',
+            avatar: result.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.username}`,
+            status: result.status || 'offline',
           })));
         }
       } catch (error) {
@@ -402,7 +401,6 @@ export default function AppSidebar() {
           {/* Quick actions */}
           <nav className="space-y-1 mb-4">
             <NavItem to="/app/tasks" icon={CheckSquare} label="Personal Tasks" />
-            <NavItem to="/app/meetings" icon={Video} label="Meetings" />
             <NavItem to="/app/whiteboard" icon={Palette} label="Whiteboard" />
             <NavItem to="/app/analytics" icon={BarChart3} label="Analytics" />
           </nav>

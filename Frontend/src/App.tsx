@@ -11,7 +11,6 @@ import AppLayout from "./components/AppLayout";
 import ChatArea from "./components/ChatArea";
 import SavedMessages from "./components/SavedMessages";
 import KanbanBoard from "./components/KanbanBoard";
-import VideoMeeting from "./components/VideoMeeting";
 import Whiteboard from "./components/Whiteboard";
 import AnalyticsDashboard from "./components/AnalyticsDashboard";
 import ProfileSettings from "./pages/ProfileSettings";
@@ -33,7 +32,6 @@ const App = () => (
                 <Route index element={<ChatArea />} />
                 <Route path="saved" element={<SavedMessages />} />
                 <Route path="tasks" element={<KanbanBoard />} />
-                <Route path="meetings" element={<VideoMeeting />} />
                 <Route path="whiteboard" element={<Whiteboard />} />
               <Route path="analytics" element={<AnalyticsDashboard />} />
               <Route path="profile" element={<ProfileSettings />} />

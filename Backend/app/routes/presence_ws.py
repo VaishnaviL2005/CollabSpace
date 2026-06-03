@@ -36,6 +36,12 @@ class PresenceManager:
         if websocket in self.active_connections:
             self.active_connections[websocket]["last_pong"] = time.time()
 
+    def online_user_ids(self) -> set[int]:
+        return {
+            connection["user_id"]
+            for connection in self.active_connections.values()
+        }
+
     async def broadcast_local(self, message: dict):
         for ws in list(self.active_connections.keys()):
             try:
@@ -102,8 +108,13 @@ async def presence_ws(
             user.status = "online"
             db.commit()
 
-        # Send current online users to this new connection
-        online_users = db.query(User).filter(User.status != "offline").all()
+        # Send current in-process online users to this new connection.
+        # DB status can be stale after server/browser crashes.
+        online_users = (
+            db.query(User)
+            .filter(User.id.in_(manager.online_user_ids()))
+            .all()
+        )
         for ou in online_users:
             await websocket.send_json({
                 "type": "global_presence",

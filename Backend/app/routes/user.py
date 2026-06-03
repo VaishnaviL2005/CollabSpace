@@ -5,6 +5,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import UserSearchResponse
 from app.core.auth import get_current_user
+from app.routes.presence_ws import manager as presence_manager
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -27,7 +28,15 @@ def search_users(
         .all()
     )
 
-    return users
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "avatar": user.avatar_url or f"https://api.dicebear.com/7.x/avataaars/svg?seed={user.username}",
+            "status": "online" if presence_manager.is_online(user.id) else "offline",
+        }
+        for user in users
+    ]
 
 from app.schemas.user import UserSearchResponse, UserProfileResponse, UserUpdate
 
@@ -37,7 +46,7 @@ def get_current_user_profile(current_user: User = Depends(get_current_user)):
         "id": str(current_user.id),
         "username": current_user.username,
         "avatar": current_user.avatar_url or f"https://api.dicebear.com/7.x/avataaars/svg?seed={current_user.username}",
-        "status": current_user.status or "offline",
+        "status": "online" if presence_manager.is_online(current_user.id) else "offline",
         "bio": current_user.bio or ""
     }
 
@@ -61,6 +70,6 @@ def update_current_user_profile(
         "id": str(current_user.id),
         "username": current_user.username,
         "avatar": current_user.avatar_url or f"https://api.dicebear.com/7.x/avataaars/svg?seed={current_user.username}",
-        "status": current_user.status or "offline",
+        "status": "online" if presence_manager.is_online(current_user.id) else "offline",
         "bio": current_user.bio or ""
     }
