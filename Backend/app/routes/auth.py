@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.user import User
@@ -9,19 +10,21 @@ from app.core.security import hash_password, verify_password, create_access_toke
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-def register_user(
+async def register_user(
     data: UserRegister,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     # check email
-    if db.query(User).filter(User.email == data.email).first():
+    result = await db.execute(select(User).where(User.email == data.email))
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=400,
             detail="Email already registered"
         )
 
     # check username
-    if db.query(User).filter(User.username == data.username).first():
+    result = await db.execute(select(User).where(User.username == data.username))
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=400,
             detail="Username already taken"
@@ -34,21 +37,18 @@ def register_user(
     )
 
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
 
     return {
         "message": "User registered successfully",
         "user_id": user.id
     }
 
-
-from sqlalchemy import or_
-
 @router.post("/login")
-def login_user(
+async def login_user(
     data: UserLogin,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     identifier = data.email or data.username
     if not identifier:
@@ -57,9 +57,10 @@ def login_user(
             detail="Must provide email or username"
         )
 
-    user = db.query(User).filter(
+    result = await db.execute(select(User).where(
         or_(User.email == identifier, User.username == identifier)
-    ).first()
+    ))
+    user = result.scalar_one_or_none()
 
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(

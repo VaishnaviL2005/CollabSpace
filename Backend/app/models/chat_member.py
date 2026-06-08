@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Enum, TIMESTAMP, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, BigInteger, Enum, Index, TIMESTAMP, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.base import Base
@@ -17,7 +17,7 @@ class ChatMember(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False
     )
-    role = Column(Enum("admin", "member"), default="member")
+    role = Column(Enum("admin", "member", name="member_role"), default="member")
     last_read_message_id = Column(
         BigInteger, 
         ForeignKey("messages.id", ondelete="SET NULL"), 
@@ -27,4 +27,5 @@ class ChatMember(Base):
 
     __table_args__ = (
         UniqueConstraint("chat_id", "user_id", name="unique_chat_member"),
+        Index("idx_chat_members_user", "user_id"),
     )

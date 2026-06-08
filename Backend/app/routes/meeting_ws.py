@@ -1,20 +1,20 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from jose import jwt, JWTError
-from sqlalchemy.orm import Session
-from typing import Dict, List
+from jose import jwt
+from sqlalchemy import select
+from typing import Dict
 import json
 
 from app.core.config import settings
-from app.db.session import SessionLocal
-from app.models.meeting import Meeting
+from app.db.session import AsyncSessionLocal
 from app.models.chat_member import ChatMember
+from app.models.meeting import Meeting
 from app.models.user import User
 
 router = APIRouter()
 
+
 class MeetingConnectionManager:
     def __init__(self):
-        # meeting_id -> { user_id: { "ws": WebSocket, "info": dict } }
         self.active_connections: Dict[int, Dict[int, dict]] = {}
 
     async def connect(self, meeting_id: int, user_id: int, websocket: WebSocket, info: dict):
@@ -22,7 +22,7 @@ class MeetingConnectionManager:
             self.active_connections[meeting_id] = {}
         self.active_connections[meeting_id][user_id] = {
             "ws": websocket,
-            "info": info
+            "info": info,
         }
 
     def disconnect(self, meeting_id: int, user_id: int):
@@ -40,7 +40,7 @@ class MeetingConnectionManager:
             except Exception:
                 pass
 
-    async def broadcast(self, meeting_id: int, message: dict, exclude_user: int = None):
+    async def broadcast(self, meeting_id: int, message: dict, exclude_user: int | None = None):
         room = self.active_connections.get(meeting_id, {})
         for uid, conn in room.items():
             if exclude_user and uid == exclude_user:
@@ -49,106 +49,109 @@ class MeetingConnectionManager:
                 await conn["ws"].send_json(message)
             except Exception:
                 pass
-                
+
     def get_users(self, meeting_id: int) -> list:
         room = self.active_connections.get(meeting_id, {})
-        return [data["info"] for uid, data in room.items()]
+        return [data["info"] for data in room.values()]
+
 
 manager = MeetingConnectionManager()
+
 
 @router.websocket("/ws/meet/{meeting_id}")
 async def meeting_ws(
     websocket: WebSocket,
     meeting_id: int,
-    token: str = Query(...)
+    token: str = Query(...),
 ):
     await websocket.accept()
-    db: Session = SessionLocal()
+    user: User | None = None
 
-    try:
-        # 🔐 Authenticate user
-        payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
-        )
-        user_id = payload.get("sub")
-        if not user_id:
-            await websocket.close(code=1008)
-            return
+    async with AsyncSessionLocal() as db:
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=[settings.ALGORITHM],
+                options={"verify_exp": False}
+            )
+            user_id = payload.get("sub")
+            if not user_id:
+                await websocket.close(code=1008)
+                return
 
-        user = db.query(User).filter(User.id == int(user_id)).first()
-        if not user:
-            await websocket.close(code=1008)
-            return
+            result = await db.execute(select(User).where(User.id == int(user_id)))
+            user = result.scalar_one_or_none()
+            if not user:
+                await websocket.close(code=1008)
+                return
 
-        # 📌 Validate meeting
-        meeting = db.query(Meeting).filter(
-            Meeting.id == meeting_id,
-            Meeting.status == "active"
-        ).first()
-        if not meeting:
-            await websocket.close(code=1008)
-            return
+            result = await db.execute(
+                select(Meeting).where(
+                    Meeting.id == meeting_id,
+                    Meeting.status == "active",
+                )
+            )
+            meeting = result.scalar_one_or_none()
+            if not meeting:
+                await websocket.close(code=1008)
+                return
 
-        # 📌 Validate chat membership
-        member = db.query(ChatMember).filter(
-            ChatMember.chat_id == meeting.chat_id,
-            ChatMember.user_id == user.id
-        ).first()
-        if not member:
-            await websocket.close(code=1008)
-            return
+            result = await db.execute(
+                select(ChatMember).where(
+                    ChatMember.chat_id == meeting.chat_id,
+                    ChatMember.user_id == user.id,
+                )
+            )
+            member = result.scalar_one_or_none()
+            if not member:
+                await websocket.close(code=1008)
+                return
 
-        # Prepare peer info
-        user_info = {
-            "id": str(user.id),
-            "name": user.username,
-            "avatar": f"https://api.dicebear.com/7.x/avataaars/svg?seed={user.username}",
-            "isMuted": False,
-            "isVideoOn": True,
-            "isSpeaking": False,
-            "isHost": getattr(meeting, 'host_id', None) == user.id
-        }
+            user_info = {
+                "id": str(user.id),
+                "name": user.username,
+                "avatar": f"https://api.dicebear.com/7.x/avataaars/svg?seed={user.username}",
+                "isMuted": False,
+                "isVideoOn": True,
+                "isSpeaking": False,
+                "isHost": getattr(meeting, "host_id", None) == user.id,
+            }
 
-        # 🔌 Send existing peers to new joinee
-        existing_users = manager.get_users(meeting_id)
-        await websocket.send_json({
-            "type": "all_users",
-            "users": existing_users
-        })
+            await websocket.send_json({
+                "type": "all_users",
+                "users": manager.get_users(meeting_id),
+            })
 
-        # Register connection
-        await manager.connect(meeting_id, user.id, websocket, user_info)
+            await manager.connect(meeting_id, user.id, websocket, user_info)
 
-        # Notify others
-        await manager.broadcast(meeting_id, {
-            "type": "user_joined",
-            "user": user_info
-        }, exclude_user=user.id)
+            await manager.broadcast(
+                meeting_id,
+                {
+                    "type": "user_joined",
+                    "user": user_info,
+                },
+                exclude_user=user.id,
+            )
 
-        # 🔁 Relay RTCPeerConnection Signals
-        while True:
-            data = await websocket.receive_text()
-            payload = json.loads(data)
+            while True:
+                data = await websocket.receive_text()
+                payload = json.loads(data)
 
-            target_id = payload.get("target")
-            if target_id:
-                # Route specific WebRTC payload (offer, answer, candidate)
+                target_id = payload.get("target")
                 payload["sender_id"] = str(user.id)
-                await manager.send_personal_message(meeting_id, int(target_id), payload)
-            else:
-                # Group broadcast (chat, muting status)
-                payload["sender_id"] = str(user.id)
-                await manager.broadcast(meeting_id, payload, exclude_user=user.id)
+                if target_id:
+                    await manager.send_personal_message(meeting_id, int(target_id), payload)
+                else:
+                    await manager.broadcast(meeting_id, payload, exclude_user=user.id)
 
-    except WebSocketDisconnect:
-        manager.disconnect(meeting_id, user.id)
-        await manager.broadcast(meeting_id, {
-            "type": "user_left",
-            "user_id": str(user.id)
-        })
-
-    finally:
-        db.close()
-
+        except WebSocketDisconnect:
+            if user:
+                manager.disconnect(meeting_id, user.id)
+                await manager.broadcast(
+                    meeting_id,
+                    {
+                        "type": "user_left",
+                        "user_id": str(user.id),
+                    },
+                )

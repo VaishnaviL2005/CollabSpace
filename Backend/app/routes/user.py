@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.user import User
@@ -13,20 +14,20 @@ router = APIRouter(prefix="/users", tags=["Users"])
     "/search",
     response_model=list[UserSearchResponse]
 )
-def search_users(
+async def search_users(
     query: str = Query(..., min_length=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    users = (
-        db.query(User)
-        .filter(
+    result = await db.execute(
+        select(User)
+        .where(
             User.username.ilike(f"%{query}%"),
             User.id != current_user.id
         )
         .limit(10)
-        .all()
     )
+    users = result.scalars().all()
 
     return [
         {
@@ -51,9 +52,9 @@ def get_current_user_profile(current_user: User = Depends(get_current_user)):
     }
 
 @router.put("/me", response_model=UserProfileResponse)
-def update_current_user_profile(
+async def update_current_user_profile(
     user_update: UserUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     if user_update.avatar is not None:
@@ -63,8 +64,8 @@ def update_current_user_profile(
     if user_update.status is not None:
         current_user.status = user_update.status
         
-    db.commit()
-    db.refresh(current_user)
+    await db.commit()
+    await db.refresh(current_user)
     
     return {
         "id": str(current_user.id),

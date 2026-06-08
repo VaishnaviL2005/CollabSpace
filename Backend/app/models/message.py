@@ -17,7 +17,7 @@ class Message(Base):
         nullable=False
     )
     content = Column(Text, nullable=False)
-    message_type = Column(Text, default="text")
+    message_type = Column(Enum("text", "file", name="message_type"), default="text")
     file_url = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
 

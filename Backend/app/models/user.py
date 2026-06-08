@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, TIMESTAMP, Text
+from sqlalchemy import Column, BigInteger, Enum, String, TIMESTAMP, Text
 from sqlalchemy.sql import func
 from app.db.base import Base
 
@@ -11,6 +11,6 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     avatar_url = Column(Text, nullable=True)
     bio = Column(String(200), nullable=True)
-    status = Column(String(20), nullable=True, default="offline")
+    status = Column(Enum("online", "offline", "away", name="user_status"), nullable=True, default="offline")
     created_at = Column(TIMESTAMP, server_default=func.now())
     last_seen = Column(TIMESTAMP, nullable=True)

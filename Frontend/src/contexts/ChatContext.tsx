@@ -519,7 +519,6 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       return true;
     } catch (e) {
       console.error('Failed ringing participants', e);
-      setActiveVideoCallChatId(chatId);
       return false;
     }
   }, []);

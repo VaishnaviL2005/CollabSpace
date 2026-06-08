@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-# from sqlalchemy import and_
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
 from app.db.session import get_db
@@ -14,36 +14,39 @@ from app.models.chat import Chat
 router = APIRouter(prefix="/meetings", tags=["Meetings"])
 
 @router.post("/start", status_code=201)
-def start_meeting(
+async def start_meeting(
     data: StartMeetingRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     # 1. Ensure user is part of chat
-    member = db.query(ChatMember).filter(
+    result = await db.execute(select(ChatMember).where(
         ChatMember.chat_id == data.chat_id,
         ChatMember.user_id == current_user.id
-    ).first()
+    ))
+    member = result.scalar_one_or_none()
 
     if not member:
         raise HTTPException(status_code=403, detail="Not a chat member")
 
     # ✅ FETCH CHAT EARLY (FIX)
-    chat = db.query(Chat).filter(Chat.id == data.chat_id).first()
+    result = await db.execute(select(Chat).where(Chat.id == data.chat_id))
+    chat = result.scalar_one_or_none()
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     # 2. Check if active meeting already exists
-    existing = db.query(Meeting).filter(
+    result = await db.execute(select(Meeting).where(
         Meeting.chat_id == data.chat_id,
         Meeting.status == "active"
-    ).first()
+    ))
+    existing = result.scalar_one_or_none()
 
     if existing:
         if not existing.room_name:
             existing.room_name = f"{chat.name}-meeting-{existing.id}"
-            db.commit()
-            db.refresh(existing)
+            await db.commit()
+            await db.refresh(existing)
 
         return {
             "meeting_id": existing.id,
@@ -59,12 +62,12 @@ def start_meeting(
     )
 
     db.add(meeting)
-    db.commit()
-    db.refresh(meeting)
+    await db.commit()
+    await db.refresh(meeting)
 
     # 4. Set room_name
     meeting.room_name = f"{chat.name}-meeting-{meeting.id}"
-    db.commit()
+    await db.commit()
 
     return {
         "meeting_id": meeting.id,
@@ -75,23 +78,25 @@ def start_meeting(
 
 
 @router.post("/{meeting_id}/join", response_model=MeetingResponse)
-def join_meeting(
+async def join_meeting(
     meeting_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    meeting = db.query(Meeting).filter(
+    result = await db.execute(select(Meeting).where(
         Meeting.id == meeting_id,
         Meeting.status == "active"
-    ).first()
+    ))
+    meeting = result.scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not active")
 
     # ensure user belongs to the chat
-    member = db.query(ChatMember).filter(
+    result = await db.execute(select(ChatMember).where(
         ChatMember.chat_id == meeting.chat_id,
         ChatMember.user_id == current_user.id
-    ).first()
+    ))
+    member = result.scalar_one_or_none()
     if not member:
         raise HTTPException(status_code=403, detail="Not a chat member")
 
@@ -103,12 +108,13 @@ def join_meeting(
 
 
 @router.post("/{meeting_id}/end")
-def end_meeting(
+async def end_meeting(
     meeting_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
+    meeting = result.scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
 
@@ -117,29 +123,31 @@ def end_meeting(
 
     meeting.status = "ended"
     meeting.ended_at = func.now()
-    db.commit()
+    await db.commit()
 
     return {"message": "Meeting ended"}
 
 @router.get("/{meeting_id}/join-info")
-def get_meeting_join_info(
+async def get_meeting_join_info(
     meeting_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    meeting = db.query(Meeting).filter(
+    result = await db.execute(select(Meeting).where(
         Meeting.id == meeting_id,
         Meeting.status == "active"
-    ).first()
+    ))
+    meeting = result.scalar_one_or_none()
 
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not active")
 
     # Ensure user is part of chat
-    member = db.query(ChatMember).filter(
+    result = await db.execute(select(ChatMember).where(
         ChatMember.chat_id == meeting.chat_id,
         ChatMember.user_id == current_user.id
-    ).first()
+    ))
+    member = result.scalar_one_or_none()
 
     if not member:
         raise HTTPException(status_code=403, detail="Not authorized")

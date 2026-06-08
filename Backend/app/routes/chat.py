@@ -1,14 +1,15 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import aliased
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 from app.db.session import get_db
 from app.models.chat import Chat
 from app.models.chat_member import ChatMember
 from app.models.user import User
 from app.schemas.chat import DirectChatListItem
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_user_ws
 from app.schemas.chat import DirectChatCreate
-from sqlalchemy import func
+from sqlalchemy import func, select, exists
 import json
 from app.core.redis import redis_client
 from app.schemas.chat import GroupChatCreate, GroupChatResponse , GroupChatListItem , GroupChatSearchItem,AddGroupMember 
@@ -35,17 +36,15 @@ async def publish_call_event(
     chat_id: int,
     event_type: str,
     current_user: User,
-    db: Session,
+    db: AsyncSession,
 ):
-    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    result = await db.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    members = (
-        db.query(ChatMember)
-        .filter(ChatMember.chat_id == chat_id)
-        .all()
-    )
+    result = await db.execute(select(ChatMember).where(ChatMember.chat_id == chat_id))
+    members = result.scalars().all()
 
     is_member = any(member.user_id == current_user.id for member in members)
     if not is_member:
@@ -75,37 +74,37 @@ async def publish_call_event(
     "/direct",
     response_model=list[DirectChatListItem]
 )
-def get_direct_chats(
-    db: Session = Depends(get_db),
+async def get_direct_chats(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     # 1. Get all direct chats user is part of
-    chats = (
-        db.query(Chat)
+    result = await db.execute(
+        select(Chat)
         .join(ChatMember)
-        .filter(
+        .where(
             Chat.type == "direct",
             ChatMember.user_id == current_user.id
         )
-        .all()
     )
+    chats = result.scalars().all()
 
-    result = []
+    items = []
 
     for chat in chats:
         # 2. Find the other member in this chat
-        other_member = (
-            db.query(User)
+        member_result = await db.execute(
+            select(User)
             .join(ChatMember)
-            .filter(
+            .where(
                 ChatMember.chat_id == chat.id,
                 User.id != current_user.id
             )
-            .first()
         )
+        other_member = member_result.scalar_one_or_none()
 
         if other_member:
-            result.append(
+            items.append(
                 DirectChatListItem(
                     chat_id=chat.id,
                     user_id=other_member.id,
@@ -113,12 +112,12 @@ def get_direct_chats(
                 )
             )
 
-    return result
+    return items
 
 @router.post("/direct")
 async def add_member_to_dm(
     data: DirectChatCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     # 1. Prevent self-DM
@@ -126,22 +125,30 @@ async def add_member_to_dm(
         raise HTTPException(status_code=400, detail="Cannot DM yourself")
 
     # 2. Check target user exists
-    other_user = db.query(User).filter(User.id == data.user_id).first()
+    result = await db.execute(select(User).where(User.id == data.user_id))
+    other_user = result.scalar_one_or_none()
     if not other_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # 3. Check if direct chat already exists
-    existing_chat = (
-        db.query(Chat)
-        .join(ChatMember)
-        .filter(
+    # 3. Check if direct chat already exists between these two users
+    result = await db.execute(
+        select(Chat).where(
             Chat.type == "direct",
-            ChatMember.user_id.in_([current_user.id, other_user.id])
+            exists(
+                select(ChatMember).where(
+                    ChatMember.chat_id == Chat.id,
+                    ChatMember.user_id == current_user.id
+                )
+            ),
+            exists(
+                select(ChatMember).where(
+                    ChatMember.chat_id == Chat.id,
+                    ChatMember.user_id == other_user.id
+                )
+            )
         )
-        .group_by(Chat.id)
-        .having(func.count(Chat.id) == 2)
-        .first()
     )
+    existing_chat = result.scalar_one_or_none()
 
     if existing_chat:
         await publish_conversation_change([current_user.id, other_user.id])
@@ -153,15 +160,15 @@ async def add_member_to_dm(
     # 4. Create new direct chat
     chat = Chat(type="direct")
     db.add(chat)
-    db.commit()
-    db.refresh(chat)
+    await db.commit()
+    await db.refresh(chat)
 
     # 5. Add both users as members
     db.add_all([
         ChatMember(chat_id=chat.id, user_id=current_user.id),
         ChatMember(chat_id=chat.id, user_id=other_user.id)
     ])
-    db.commit()
+    await db.commit()
     await publish_conversation_change([current_user.id, other_user.id])
 
     return {
@@ -176,15 +183,12 @@ async def add_member_to_dm(
 )
 async def create_group_chat(
     data: GroupChatCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     # 1️⃣ Validate members exist
-    members = (
-        db.query(User)
-        .filter(User.id.in_(data.member_ids))
-        .all()
-    )
+    result = await db.execute(select(User).where(User.id.in_(data.member_ids)))
+    members = result.scalars().all()
 
     if len(members) != len(set(data.member_ids)):
         raise HTTPException(status_code=400, detail="One or more users not found")
@@ -196,8 +200,8 @@ async def create_group_chat(
         created_by=current_user.id
     )
     db.add(chat)
-    db.commit()
-    db.refresh(chat)
+    await db.commit()
+    await db.refresh(chat)
 
     # 3️⃣ Add creator + members to chat_members
     chat_members = [
@@ -209,7 +213,7 @@ async def create_group_chat(
     ]
 
     db.add_all(chat_members)
-    db.commit()
+    await db.commit()
     await publish_conversation_change([member.user_id for member in chat_members])
 
     return GroupChatResponse(chat_id=chat.id, name=chat.name)
@@ -218,13 +222,13 @@ async def create_group_chat(
     "/groups",
     response_model=list[GroupChatListItem]
 )
-def get_my_groups(
-    db: Session = Depends(get_db),
+async def get_my_groups(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     current_membership = aliased(ChatMember)
-    groups = (
-        db.query(
+    result = await db.execute(
+        select(
             Chat.id.label("chat_id"),
             Chat.name,
             Chat.created_by,
@@ -232,40 +236,50 @@ def get_my_groups(
         )
         .join(ChatMember, Chat.id == ChatMember.chat_id)
         .join(current_membership, Chat.id == current_membership.chat_id)
-        .filter(
+        .where(
             Chat.type == "group",
             current_membership.user_id == current_user.id
         )
         .group_by(Chat.id)
-        .all()
     )
-
-    return groups
+    return [
+        {
+            "chat_id": row.chat_id,
+            "name": row.name,
+            "created_by": row.created_by,
+            "member_count": row.member_count,
+        }
+        for row in result.all()
+    ]
 
 @router.get(
     "/groups/search",
     response_model=list[GroupChatSearchItem]
 )
-def search_my_groups(
+async def search_my_groups(
     q: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    groups = (
-        db.query(
+    result = await db.execute(
+        select(
             Chat.id.label("chat_id"),
             Chat.name
         )
         .join(ChatMember, Chat.id == ChatMember.chat_id)
-        .filter(
+        .where(
             Chat.type == "group",
             ChatMember.user_id == current_user.id,
             Chat.name.ilike(f"%{q}%")
         )
-        .all()
     )
-
-    return groups
+    return [
+        {
+            "chat_id": row.chat_id,
+            "name": row.name,
+        }
+        for row in result.all()
+    ]
 
 @router.post(
     "/group/{chat_id}/members",
@@ -274,54 +288,44 @@ def search_my_groups(
 async def add_member_to_group(
     chat_id: int,
     data: AddGroupMember,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # 1️⃣ Ensure chat exists & is group
-    chat = (
-        db.query(Chat)
-        .filter(Chat.id == chat_id, Chat.type == "group")
-        .first()
-    )
+    result = await db.execute(select(Chat).where(Chat.id == chat_id, Chat.type == "group"))
+    chat = result.scalar_one_or_none()
     if not chat:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    # 2️⃣ Ensure current user is group member
-    is_member = (
-        db.query(ChatMember)
-        .filter(
+    result = await db.execute(
+        select(ChatMember).where(
             ChatMember.chat_id == chat_id,
             ChatMember.user_id == current_user.id
         )
-        .first()
     )
+    is_member = result.scalar_one_or_none()
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a group member")
 
-    # 3️⃣ Ensure target user exists
-    user = db.query(User).filter(User.id == data.user_id).first()
+    result = await db.execute(select(User).where(User.id == data.user_id))
+    user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # 4️⃣ Prevent duplicate add
-    already_member = (
-        db.query(ChatMember)
-        .filter(
+    result = await db.execute(
+        select(ChatMember).where(
             ChatMember.chat_id == chat_id,
             ChatMember.user_id == data.user_id
         )
-        .first()
     )
+    already_member = result.scalar_one_or_none()
     if already_member:
         raise HTTPException(status_code=400, detail="User already in group")
 
-    # 5️⃣ Add user to group
     db.add(ChatMember(chat_id=chat_id, user_id=data.user_id))
-    db.commit()
-    member_ids = [
-        member.user_id
-        for member in db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
-    ]
+    await db.commit()
+
+    result = await db.execute(select(ChatMember).where(ChatMember.chat_id == chat_id))
+    member_ids = [member.user_id for member in result.scalars().all()]
     await publish_conversation_change(member_ids)
 
     return {
@@ -334,45 +338,43 @@ async def add_member_to_group(
     "/group/{chat_id}/members",
     response_model=list[UserSearchResponse]
 )
-def get_group_members(
+async def get_group_members(
     chat_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    is_member = (
-        db.query(ChatMember)
-        .filter(
+    result = await db.execute(
+        select(ChatMember).where(
             ChatMember.chat_id == chat_id,
             ChatMember.user_id == current_user.id
         )
-        .first()
     )
+    is_member = result.scalar_one_or_none()
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a group member")
 
-    return (
-        db.query(User)
+    result = await db.execute(
+        select(User)
         .join(ChatMember, User.id == ChatMember.user_id)
-        .filter(ChatMember.chat_id == chat_id)
-        .all()
+        .where(ChatMember.chat_id == chat_id)
     )
+    return result.scalars().all()
 
 @router.get(
     "/{chat_id}/livekit-token"
 )
 async def get_livekit_token(
     chat_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_ws)
 ):
-    is_member = (
-        db.query(ChatMember)
-        .filter(
+    result = await db.execute(
+        select(ChatMember).where(
             ChatMember.chat_id == chat_id,
             ChatMember.user_id == current_user.id
         )
-        .first()
     )
+    is_member = result.scalar_one_or_none()
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a member of this chat")
 
@@ -384,7 +386,7 @@ async def get_livekit_token(
         raise HTTPException(status_code=500, detail="LiveKit credentials not configured in backend")
 
     grant = api.VideoGrants(room_join=True, room=f"chat-{chat_id}")
-    
+
     access_token = api.AccessToken(api_key, api_secret)
     access_token.with_identity(str(current_user.id))
     access_token.with_name(current_user.username)
@@ -398,7 +400,7 @@ async def get_livekit_token(
 @router.post("/{chat_id}/ring")
 async def ring_chat(
     chat_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     return await publish_call_event(chat_id, "incoming_call", current_user, db)
@@ -406,7 +408,7 @@ async def ring_chat(
 @router.post("/{chat_id}/call/end")
 async def end_call(
     chat_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     return await publish_call_event(chat_id, "call_ended", current_user, db)
@@ -414,7 +416,7 @@ async def end_call(
 @router.post("/{chat_id}/call/decline")
 async def decline_call(
     chat_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     return await publish_call_event(chat_id, "call_declined", current_user, db)
