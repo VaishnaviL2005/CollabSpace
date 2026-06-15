@@ -62,8 +62,7 @@ async def get_current_user_ws(
         payload = jwt.decode(
             token,
             settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
-            options={"verify_exp": False}
+            algorithms=[settings.ALGORITHM]
         )
         user_id = payload.get("sub")
 
@@ -73,6 +72,11 @@ async def get_current_user_ws(
                 detail="Invalid token"
             )
 
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired"
+        )
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

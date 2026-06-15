@@ -1,5 +1,5 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from jose import jwt
+from jose import jwt, JWTError, ExpiredSignatureError
 from sqlalchemy import select
 from sqlalchemy.sql import func
 from typing import Dict
@@ -91,8 +91,7 @@ async def presence_ws(
             payload = jwt.decode(
                 token,
                 settings.SECRET_KEY,
-                algorithms=[settings.ALGORITHM],
-                options={"verify_exp": False}
+                algorithms=[settings.ALGORITHM]
             )
             user_id = payload.get("sub")
             if not user_id:
@@ -108,17 +107,13 @@ async def presence_ws(
             was_online = manager.is_online(user.id)
             await manager.connect(user.id, websocket)
 
-            if not was_online:
-                user.status = "online"
-                await db.commit()
-
             result = await db.execute(select(User).where(User.id.in_(manager.online_user_ids())))
             online_users = result.scalars().all()
             for online_user in online_users:
                 await websocket.send_json({
                     "type": "global_presence",
                     "user_id": str(online_user.id),
-                    "status": online_user.status,
+                    "status": "online",
                 })
 
             if not was_online:
@@ -140,12 +135,13 @@ async def presence_ws(
                 except json.JSONDecodeError:
                     pass
 
+        except (ExpiredSignatureError, JWTError):
+            await websocket.close(code=1008)
         except WebSocketDisconnect:
             pass
         finally:
             disconnected_user_id = manager.disconnect(websocket)
             if user and disconnected_user_id and not manager.is_online(user.id):
-                user.status = "offline"
                 user.last_seen = func.now()
                 await db.commit()
                 await redis_client.publish(

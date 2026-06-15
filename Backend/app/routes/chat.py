@@ -9,7 +9,8 @@ from app.models.user import User
 from app.schemas.chat import DirectChatListItem
 from app.core.auth import get_current_user, get_current_user_ws
 from app.schemas.chat import DirectChatCreate
-from sqlalchemy import func, select, exists
+from sqlalchemy import func, select, and_
+from sqlalchemy.exc import IntegrityError
 import json
 from app.core.redis import redis_client
 from app.schemas.chat import GroupChatCreate, GroupChatResponse , GroupChatListItem , GroupChatSearchItem,AddGroupMember 
@@ -22,6 +23,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 router = APIRouter(prefix="/chats", tags=["Chats"])
+
+def build_direct_key(user_id_a: int, user_id_b: int) -> str:
+    first_id, second_id = sorted([int(user_id_a), int(user_id_b)])
+    return f"{first_id}:{second_id}"
 
 async def publish_conversation_change(user_ids: list[int]):
     await redis_client.publish(
@@ -70,6 +75,29 @@ async def publish_call_event(
     await redis_client.publish("global_presence", json.dumps(payload))
     return {"status": event_type, "targets": len(target_user_ids)}
 
+async def find_direct_chat_by_members(
+    db: AsyncSession,
+    first_user_id: int,
+    second_user_id: int,
+) -> Chat | None:
+    first_membership = aliased(ChatMember)
+    second_membership = aliased(ChatMember)
+    result = await db.execute(
+        select(Chat)
+        .join(first_membership, and_(
+            first_membership.chat_id == Chat.id,
+            first_membership.user_id == first_user_id,
+        ))
+        .join(second_membership, and_(
+            second_membership.chat_id == Chat.id,
+            second_membership.user_id == second_user_id,
+        ))
+        .where(Chat.type == "direct")
+        .order_by(Chat.id.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
 @router.get(
     "/direct",
     response_model=list[DirectChatListItem]
@@ -95,7 +123,7 @@ async def get_direct_chats(
         # 2. Find the other member in this chat
         member_result = await db.execute(
             select(User)
-            .join(ChatMember)
+            .join(ChatMember, User.id == ChatMember.user_id)
             .where(
                 ChatMember.chat_id == chat.id,
                 User.id != current_user.id
@@ -130,25 +158,26 @@ async def add_member_to_dm(
     if not other_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    direct_key = build_direct_key(current_user.id, other_user.id)
+
     # 3. Check if direct chat already exists between these two users
     result = await db.execute(
-        select(Chat).where(
-            Chat.type == "direct",
-            exists(
-                select(ChatMember).where(
-                    ChatMember.chat_id == Chat.id,
-                    ChatMember.user_id == current_user.id
-                )
-            ),
-            exists(
-                select(ChatMember).where(
-                    ChatMember.chat_id == Chat.id,
-                    ChatMember.user_id == other_user.id
-                )
-            )
-        )
+        select(Chat).where(Chat.type == "direct", Chat.direct_key == direct_key)
     )
     existing_chat = result.scalar_one_or_none()
+    if not existing_chat:
+        existing_chat = await find_direct_chat_by_members(db, current_user.id, other_user.id)
+        if existing_chat and not existing_chat.direct_key:
+            existing_chat.direct_key = direct_key
+            try:
+                await db.commit()
+                await db.refresh(existing_chat)
+            except IntegrityError:
+                await db.rollback()
+                result = await db.execute(
+                    select(Chat).where(Chat.type == "direct", Chat.direct_key == direct_key)
+                )
+                existing_chat = result.scalar_one_or_none()
 
     if existing_chat:
         await publish_conversation_change([current_user.id, other_user.id])
@@ -158,17 +187,25 @@ async def add_member_to_dm(
         }
 
     # 4. Create new direct chat
-    chat = Chat(type="direct")
+    chat = Chat(type="direct", direct_key=direct_key)
     db.add(chat)
-    await db.commit()
-    await db.refresh(chat)
+    try:
+        await db.commit()
+        await db.refresh(chat)
 
-    # 5. Add both users as members
-    db.add_all([
-        ChatMember(chat_id=chat.id, user_id=current_user.id),
-        ChatMember(chat_id=chat.id, user_id=other_user.id)
-    ])
-    await db.commit()
+        # 5. Add both users as members
+        db.add_all([
+            ChatMember(chat_id=chat.id, user_id=current_user.id),
+            ChatMember(chat_id=chat.id, user_id=other_user.id)
+        ])
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        result = await db.execute(
+            select(Chat).where(Chat.type == "direct", Chat.direct_key == direct_key)
+        )
+        chat = result.scalar_one()
+
     await publish_conversation_change([current_user.id, other_user.id])
 
     return {

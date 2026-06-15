@@ -27,7 +27,7 @@ class Meeting(Base):
         default="active"
     )
 
-    room_name = Column(String(255), nullable=False, unique=True)
+    room_name = Column(String(255), nullable=True, unique=True)
 
     started_at = Column(
         TIMESTAMP,

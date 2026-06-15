@@ -1,5 +1,5 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from jose import jwt
+from jose import jwt, JWTError, ExpiredSignatureError
 from sqlalchemy import select
 from typing import Dict
 import json
@@ -72,8 +72,7 @@ async def meeting_ws(
             payload = jwt.decode(
                 token,
                 settings.SECRET_KEY,
-                algorithms=[settings.ALGORITHM],
-                options={"verify_exp": False}
+                algorithms=[settings.ALGORITHM]
             )
             user_id = payload.get("sub")
             if not user_id:
@@ -145,6 +144,8 @@ async def meeting_ws(
                 else:
                     await manager.broadcast(meeting_id, payload, exclude_user=user.id)
 
+        except (ExpiredSignatureError, JWTError):
+            await websocket.close(code=1008)
         except WebSocketDisconnect:
             if user:
                 manager.disconnect(meeting_id, user.id)
