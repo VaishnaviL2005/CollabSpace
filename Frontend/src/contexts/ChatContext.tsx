@@ -55,7 +55,7 @@ interface ChatContextType {
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children, currentUserId }: { children: ReactNode; currentUserId?: string }) {
-  const { user: authUser } = useAuth();
+  const { user: authUser, logout } = useAuth();
   
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>('');
@@ -199,6 +199,10 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     if (!authUser) return;
 
     const token = localStorage.getItem('collab-token');
+    if (!token) {
+      logout();
+      return;
+    }
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
 
@@ -249,7 +253,11 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
         } catch (e) {}
       };
 
-      pWs.onclose = () => {
+      pWs.onclose = (event) => {
+        if (event.code === 1008) {
+          logout();
+          return;
+        }
         if (!disposed) reconnectTimer = setTimeout(connect, 2000);
       };
     };
@@ -261,12 +269,16 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       presenceWsRef.current?.close();
     };
-  }, [authUser, loadConversations]);
+  }, [authUser, loadConversations, logout]);
 
   useEffect(() => {
     if (!activeConversationId || !authUser) return;
 
     const token = localStorage.getItem('collab-token');
+    if (!token) {
+      logout();
+      return;
+    }
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
 
@@ -368,7 +380,11 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        if (event.code === 1008) {
+          logout();
+          return;
+        }
         if (!disposed) reconnectTimer = setTimeout(connect, 2000);
       };
     };
@@ -380,7 +396,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [activeConversationId, authUser]);
+  }, [activeConversationId, authUser, logout]);
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
   const messages = activeConversation?.messages || [];

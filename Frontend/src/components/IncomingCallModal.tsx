@@ -11,8 +11,37 @@ interface IncomingCallModalProps {
 export default function IncomingCallModal({ callData, onAccept, onDecline }: IncomingCallModalProps) {
   useEffect(() => {
     const audio = new Audio('/ringtone.mp3');
+    let beepInterval: ReturnType<typeof setInterval> | undefined;
+    let audioContext: AudioContext | undefined;
+
+    const playFallbackBeep = () => {
+      if (beepInterval) return;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      audioContext = new AudioContextClass();
+      const beep = () => {
+        const oscillator = audioContext?.createOscillator();
+        const gain = audioContext?.createGain();
+        if (!oscillator || !gain || !audioContext) return;
+
+        oscillator.frequency.value = 880;
+        gain.gain.value = 0.08;
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + 0.18);
+      };
+
+      beep();
+      beepInterval = setInterval(beep, 1500);
+    };
+
     audio.loop = true;
-    audio.play().catch(e => console.warn("Incoming call ringtone could not autoplay", e));
+    audio.play().catch(e => {
+      console.warn("Incoming call ringtone could not autoplay", e);
+      playFallbackBeep();
+    });
 
     const timer = setTimeout(() => {
       onDecline();
@@ -21,6 +50,8 @@ export default function IncomingCallModal({ callData, onAccept, onDecline }: Inc
     return () => {
       audio.pause();
       audio.currentTime = 0;
+      if (beepInterval) clearInterval(beepInterval);
+      audioContext?.close();
       clearTimeout(timer);
     };
   }, [onDecline]);
