@@ -61,8 +61,6 @@ async def update_current_user_profile(
         current_user.avatar_url = user_update.avatar
     if user_update.bio is not None:
         current_user.bio = user_update.bio
-    if user_update.status is not None:
-        current_user.status = user_update.status
         
     await db.commit()
     await db.refresh(current_user)

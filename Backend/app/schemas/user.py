@@ -17,4 +17,3 @@ class UserProfileResponse(BaseModel):
 class UserUpdate(BaseModel):
     avatar: Optional[str] = None
     bio: Optional[str] = None
-    status: Optional[str] = None

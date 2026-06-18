@@ -17,7 +17,7 @@ class ChatMember(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False
     )
-    role = Column(Enum("admin", "member", name="member_role"), default="member")
+    role = Column(Enum("admin", "member", name="member_role"), nullable=True)
     last_read_message_id = Column(
         BigInteger, 
         ForeignKey("messages.id", ondelete="SET NULL"), 

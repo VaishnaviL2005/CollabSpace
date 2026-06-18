@@ -195,8 +195,8 @@ async def add_member_to_dm(
 
         # 5. Add both users as members
         db.add_all([
-            ChatMember(chat_id=chat.id, user_id=current_user.id),
-            ChatMember(chat_id=chat.id, user_id=other_user.id)
+            ChatMember(chat_id=chat.id, user_id=current_user.id, role=None),
+            ChatMember(chat_id=chat.id, user_id=other_user.id, role=None)
         ])
         await db.commit()
     except IntegrityError:
@@ -242,9 +242,9 @@ async def create_group_chat(
 
     # 3️⃣ Add creator + members to chat_members
     chat_members = [
-        ChatMember(chat_id=chat.id, user_id=current_user.id)
+        ChatMember(chat_id=chat.id, user_id=current_user.id, role="admin")
     ] + [
-        ChatMember(chat_id=chat.id, user_id=user.id)
+        ChatMember(chat_id=chat.id, user_id=user.id, role="member")
         for user in members
         if user.id != current_user.id
     ]
@@ -358,7 +358,7 @@ async def add_member_to_group(
     if already_member:
         raise HTTPException(status_code=400, detail="User already in group")
 
-    db.add(ChatMember(chat_id=chat_id, user_id=data.user_id))
+    db.add(ChatMember(chat_id=chat_id, user_id=data.user_id, role="member"))
     await db.commit()
 
     result = await db.execute(select(ChatMember).where(ChatMember.chat_id == chat_id))
