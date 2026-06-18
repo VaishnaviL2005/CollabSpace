@@ -28,4 +28,5 @@ class ChatMember(Base):
     __table_args__ = (
         UniqueConstraint("chat_id", "user_id", name="unique_chat_member"),
         Index("idx_chat_members_user", "user_id"),
+        Index("idx_chat_members_chat", "chat_id"),
     )
