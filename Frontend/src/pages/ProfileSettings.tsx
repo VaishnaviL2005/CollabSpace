@@ -9,13 +9,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { 
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,14 +31,12 @@ import {
   CheckCircle2,
   Clock
 } from 'lucide-react';
-import { UserStatus } from '@/types';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 interface ProfileFormData {
   email: string;
   bio: string;
-  status: UserStatus;
 }
 
 interface ValidationErrors {
@@ -63,7 +54,6 @@ const ProfileSettings = () => {
   const [formData, setFormData] = useState<ProfileFormData>({
     email: 'alice@example.com', // Demo email
     bio: 'Hey there! I\'m using CollabChat.',
-    status: user?.status || 'online',
   });
 
   const [originalData] = useState<ProfileFormData>({ ...formData });
@@ -172,7 +162,6 @@ const ProfileSettings = () => {
         const updated = await fetchWithAuth('/users/me', {
           method: 'PUT',
           body: JSON.stringify({
-            status: formData.status,
             bio: formData.bio || ''
           })
         });
@@ -244,15 +233,9 @@ const ProfileSettings = () => {
 
   const hasChanges = 
     formData.bio !== originalData.bio ||
-    formData.status !== originalData.status ||
     avatarPreview !== null;
 
-  const statusOptions: { value: UserStatus; label: string; color: string }[] = [
-    { value: 'online', label: 'Online', color: 'bg-success' },
-    { value: 'away', label: 'Away', color: 'bg-warning' },
-    { value: 'dnd', label: 'Do Not Disturb', color: 'bg-destructive' },
-    { value: 'offline', label: 'Offline', color: 'bg-muted-foreground' },
-  ];
+  const runtimeStatus = user?.status || 'offline';
 
   return (
     <div className="flex-1 overflow-y-auto p-6 h-full w-full">
@@ -357,25 +340,16 @@ const ProfileSettings = () => {
             {/* Status */}
             <div className="space-y-2">
               <Label>Status</Label>
-              <Select
-                value={formData.status}
-                onValueChange={(value) => handleInputChange('status', value as UserStatus)}
-                disabled={!isEditing}
-              >
-                <SelectTrigger className={cn(!isEditing && 'bg-muted')}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {statusOptions.map(option => (
-                    <SelectItem key={option.value} value={option.value}>
-                      <div className="flex items-center gap-2">
-                        <span className={cn('h-2 w-2 rounded-full', option.color)} />
-                        {option.label}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex h-10 items-center gap-2 rounded-md border bg-muted px-3 text-sm capitalize">
+                <span className={cn(
+                  'h-2 w-2 rounded-full',
+                  runtimeStatus === 'online' ? 'bg-success' : 'bg-muted-foreground'
+                )} />
+                {runtimeStatus}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Presence is calculated from your active realtime connection.
+              </p>
             </div>
 
             {/* Bio */}
