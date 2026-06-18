@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChat } from '@/contexts/ChatContext';
 import { Message, MessageStatus } from '@/types';
+import { API_BASE_URL } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -46,6 +47,7 @@ import {
   Trash2,
   Check,
   CheckCheck,
+  FileText,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
@@ -126,6 +128,12 @@ function MessageBubble({ message, isOwn, senderName, senderAvatar, onReply, onSa
     });
   };
 
+  const fileUrl = message.fileUrl
+    ? message.fileUrl.startsWith('blob:') || message.fileUrl.startsWith('http')
+      ? message.fileUrl
+      : `${API_BASE_URL}${message.fileUrl}`
+    : '';
+
   return (
     <div 
       ref={messageRef}
@@ -171,6 +179,18 @@ function MessageBubble({ message, isOwn, senderName, senderAvatar, onReply, onSa
             : "bg-chat-other text-chat-other-text rounded-tl-md"
         )}>
           <p className="text-sm leading-relaxed">{renderContent(message.content)}</p>
+          {message.messageType === 'file' && fileUrl && (
+            <a
+              href={fileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 flex max-w-xs items-center gap-2 rounded-md border border-border/50 bg-background/70 px-3 py-2 text-sm underline-offset-2 hover:underline"
+            >
+              <FileText className="h-4 w-4 flex-shrink-0" />
+              <span className="truncate">{message.content}</span>
+              <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
+            </a>
+          )}
         </div>
         
         {/* Message actions */}
@@ -231,6 +251,7 @@ export default function ChatArea() {
   const { 
     messages, 
     addMessage, 
+    uploadFileMessage,
     toggleSaveMessage, 
     typingUsers, 
     activeConversation,
@@ -296,17 +317,25 @@ export default function ChatArea() {
     }
   }, [highlightedMessageId, clearHighlight]);
   
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputValue.trim() && !attachment) return;
-    
-    const mentions = inputValue.match(/@(\w+)/g)?.map(m => m.slice(1)) || [];
-    
-    addMessage({
-      senderId: user?.id || '',
-      content: inputValue,
-      replyTo: replyingTo || undefined,
-      mentions: mentions.length > 0 ? mentions : undefined,
-    });
+
+    if (attachment) {
+      const uploaded = await uploadFileMessage(attachment, inputValue);
+      if (!uploaded) {
+        toast.error('Failed to upload file');
+        return;
+      }
+    } else {
+      const mentions = inputValue.match(/@(\w+)/g)?.map(m => m.slice(1)) || [];
+
+      addMessage({
+        senderId: user?.id || '',
+        content: inputValue,
+        replyTo: replyingTo || undefined,
+        mentions: mentions.length > 0 ? mentions : undefined,
+      });
+    }
     
     setInputValue('');
     setReplyingTo(null);

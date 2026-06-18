@@ -27,6 +27,7 @@ interface ChatContextType {
   messages: Message[];
   savedMessages: Message[];
   addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void;
+  uploadFileMessage: (file: File, content?: string) => Promise<boolean>;
   toggleSaveMessage: (messageId: string) => void;
   typingUsers: string[];
   setTyping: (userId: string, isTyping: boolean) => void;
@@ -485,6 +486,71 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
     }
   };
 
+  const uploadFileMessage = useCallback(async (file: File, content?: string) => {
+    if (!activeConversationId || !authUser) return false;
+
+    const clientId = `temp-${crypto.randomUUID()}`;
+    const optimisticMsg: Message = {
+      id: clientId,
+      senderId: authUser.id,
+      content: file.name,
+      timestamp: new Date(),
+      status: 'sending',
+      messageType: 'file',
+      fileUrl: URL.createObjectURL(file),
+    };
+
+    setConversations(prev => prev.map(c =>
+      c.id === activeConversationId
+        ? { ...c, messages: [...c.messages, optimisticMsg], lastMessage: optimisticMsg }
+        : c
+    ));
+
+    const formData = new FormData();
+    formData.append('chat_id', activeConversationId);
+    formData.append('content', content?.trim() || '');
+    formData.append('client_id', clientId);
+    formData.append('file', file);
+
+    try {
+      const savedMessage = await fetchWithAuth('/messages/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const persistedMessage: Message = {
+        id: savedMessage.id.toString(),
+        senderId: savedMessage.sender_id.toString(),
+        content: savedMessage.content || file.name,
+        timestamp: new Date(savedMessage.created_at || Date.now()),
+        status: 'sent',
+        messageType: savedMessage.message_type,
+        fileUrl: savedMessage.file_url,
+      };
+
+      setConversations(prev => prev.map(c => {
+        if (c.id !== activeConversationId) return c;
+
+        const optimisticIndex = c.messages.findIndex(message => message.id === clientId);
+        if (optimisticIndex < 0) return c;
+
+        const nextMessages = [...c.messages];
+        nextMessages[optimisticIndex] = persistedMessage;
+        return { ...c, messages: nextMessages, lastMessage: persistedMessage };
+      }));
+      return true;
+    } catch (error) {
+      console.error('Failed uploading file message', error);
+      setConversations(prev => prev.map(c => ({
+        ...c,
+        messages: c.messages.filter(message => message.id !== clientId),
+      })));
+      return false;
+    } finally {
+      URL.revokeObjectURL(optimisticMsg.fileUrl || '');
+    }
+  }, [activeConversationId, authUser]);
+
   const toggleSaveMessage = (messageId: string) => {
     setConversations(prev => prev.map(c => ({
       ...c,
@@ -638,6 +704,7 @@ export function ChatProvider({ children, currentUserId }: { children: ReactNode;
       messages, 
       savedMessages, 
       addMessage, 
+      uploadFileMessage,
       toggleSaveMessage, 
       typingUsers, 
       setTyping,

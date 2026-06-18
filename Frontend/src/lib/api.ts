@@ -3,11 +3,15 @@ export const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
 
 export async function fetchWithAuth(endpoint: string, options: RequestInit = {}) {
   const token = localStorage.getItem('collab-token');
+  const isFormData = options.body instanceof FormData;
   
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {})
   };
+
+  if (!isFormData) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
