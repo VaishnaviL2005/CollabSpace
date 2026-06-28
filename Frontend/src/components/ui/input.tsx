@@ -19,7 +19,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           // File input styles
           "file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground",
           // Focus styles - accessible focus ring
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "focus-visible:outline-none focus-visible:border-ring focus-visible:ring-0 focus-visible:shadow-none",
           // Hover state
           "hover:border-muted-foreground/50",
           // Transition

@@ -158,12 +158,12 @@ export default function AuthPage() {
       </div>
       
       {/* Right side - Auth forms (58% width) */}
-      <div className="flex-1 lg:w-[58%] flex items-center justify-center p-6 bg-background">
-        <div className="w-full max-w-md">
-          <Card className="shadow-lg animate-bounce-in overflow-hidden">
-            <CardContent className="p-0">
+      <div className="flex-1 lg:w-[58%] flex h-screen min-h-0 items-center justify-center overflow-hidden p-6 bg-background">
+        <div className="flex min-h-0 w-full max-w-md">
+          <Card className="flex max-h-[calc(100vh-3rem)] min-h-0 w-full flex-col shadow-lg animate-bounce-in overflow-hidden">
+            <CardContent className="flex min-h-0 flex-1 flex-col p-0">
               {/* Fixed height container to prevent jumping */}
-              <div className="h-[600px] flex flex-col">
+              <div className="flex h-[min(600px,calc(100vh-3rem))] min-h-0 flex-col">
                 {/* Header with dark mode toggle */}
                 <div className="flex items-center justify-between px-6 pt-6 pb-4">
                   <div>
@@ -180,14 +180,14 @@ export default function AuthPage() {
                   </Button>
                 </div>
                 
-                <div className="px-6 pb-6 flex-1 flex flex-col overflow-hidden">
-                  <Tabs defaultValue="login" className="w-full flex-1 flex flex-col">
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6">
+                  <Tabs defaultValue="login" className="flex min-h-0 w-full flex-1 flex-col">
                     <TabsList className="grid w-full grid-cols-2 mb-5">
                       <TabsTrigger value="login" className="transition-all">Login</TabsTrigger>
                       <TabsTrigger value="signup" className="transition-all">Sign Up</TabsTrigger>
                     </TabsList>
                     
-                    <div className="flex-1 overflow-auto">
+                    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth pr-1">
                       <TabsContent value="login" className="mt-0 h-full data-[state=active]:animate-fade-in">
                         <form onSubmit={handleLogin} className="space-y-4">
                           <div className="space-y-2">
@@ -198,7 +198,7 @@ export default function AuthPage() {
                               value={loginData.username}
                               onChange={e => setLoginData(prev => ({ ...prev, username: e.target.value }))}
                               required
-                              className="h-11 transition-all focus:ring-2 focus:ring-primary/20"
+                              className="h-11 transition-all"
                             />
                           </div>
                           <div className="space-y-2">
@@ -211,7 +211,7 @@ export default function AuthPage() {
                                 value={loginData.password}
                                 onChange={e => setLoginData(prev => ({ ...prev, password: e.target.value }))}
                                 required
-                                className="h-11 pr-10 transition-all focus:ring-2 focus:ring-primary/20"
+                                className="h-11 pr-10 transition-all"
                               />
                               <Button
                                 type="button"
@@ -238,7 +238,7 @@ export default function AuthPage() {
                         </div>
                       </TabsContent>
                       
-                      <TabsContent value="signup" className="mt-0 data-[state=active]:animate-fade-in pb-10">
+                      <TabsContent value="signup" className="mt-0 pb-6 data-[state=active]:animate-fade-in">
                         <form onSubmit={handleSignup} className="space-y-4">
                           <div className="space-y-1.5">
                             <Label htmlFor="signup-username">Username</Label>
@@ -248,7 +248,7 @@ export default function AuthPage() {
                               value={signupData.username}
                               onChange={e => setSignupData(prev => ({ ...prev, username: e.target.value }))}
                               required
-                              className="h-10 transition-all focus:ring-2 focus:ring-primary/20"
+                              className="h-10 transition-all"
                             />
                           </div>
                           <div className="space-y-1.5">
@@ -260,7 +260,7 @@ export default function AuthPage() {
                               value={signupData.email}
                               onChange={e => setSignupData(prev => ({ ...prev, email: e.target.value }))}
                               required
-                              className="h-10 transition-all focus:ring-2 focus:ring-primary/20"
+                              className="h-10 transition-all"
                             />
                           </div>
 
@@ -274,7 +274,7 @@ export default function AuthPage() {
                                 value={signupData.password}
                                 onChange={e => setSignupData(prev => ({ ...prev, password: e.target.value }))}
                                 required
-                                className="h-10 pr-10 transition-all focus:ring-2 focus:ring-primary/20"
+                                className="h-10 pr-10 transition-all"
                               />
                               <Button
                                 type="button"
@@ -306,7 +306,7 @@ export default function AuthPage() {
                                 value={signupData.confirmPassword}
                                 onChange={e => setSignupData(prev => ({ ...prev, confirmPassword: e.target.value }))}
                                 required
-                                className="h-10 pr-10 transition-all focus:ring-2 focus:ring-primary/20"
+                                className="h-10 pr-10 transition-all"
                               />
                               <Button
                                 type="button"
