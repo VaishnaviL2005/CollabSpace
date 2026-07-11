@@ -1,147 +1,98 @@
-# CollabSpace
+# CollabSpace – Collaboration Platform
 
-CollabSpace is a full-stack collaboration workspace with direct and group chat, realtime presence, read receipts, typing indicators, meetings, saved messages, tasks, a whiteboard, analytics, and profile settings.
+A full-stack, real-time collaboration workspace designed for seamless communication and productivity. Built with a modern **FastAPI, PostgreSQL, Redis, and React** stack, integrating **LiveKit WebRTC** for instant video conferencing.
 
-## Tech Stack
+## 🚀 Key Highlights
+
+- **Real-Time Messaging Engine:** Engineered a highly scalable backend utilizing **Redis Pub/Sub** to fan-out events across multiple **FastAPI workers**. Supports direct messages (DMs), group chats, live typing indicators, WhatsApp-style read receipts, and real-time presence tracking over persistent WebSockets.
+- **Secure Architecture:** Implemented robust **JWT-based authentication** with bcrypt hashing. Enforced strict token validation on both standard REST endpoints and during WebSocket handshakes to completely prevent unauthorized real-time access.
+- **WebRTC Video Conferencing:** Integrated **LiveKit Cloud** to power low-latency video calls. Built the full end-to-end workflow, including FastAPI JWT token generation for room access, cross-socket incoming call signaling, accept/reject workflows with an interactive UI, and Redis-backed call state synchronization.
+
+## 💻 Tech Stack
 
 ### Backend
-
-- Python
-- FastAPI
-- SQLAlchemy ORM
-- MySQL
-- Redis Pub/Sub
-- WebSockets
-- JWT authentication
-- Pydantic
+- **Python / FastAPI:** High-performance async API framework.
+- **PostgreSQL / SQLAlchemy:** Relational database with async connection pooling.
+- **Redis:** Pub/Sub message broker for cross-worker WebSocket communication and caching.
+- **LiveKit Server SDK:** Secure token generation for WebRTC rooms.
+- **JWT & Bcrypt:** Secure password hashing and stateless session management.
 
 ### Frontend
+- **React / TypeScript / Vite:** Lightning-fast, strictly typed modern frontend.
+- **Tailwind CSS & shadcn/ui:** Beautiful, accessible, and responsive user interfaces.
+- **LiveKit Components:** Pre-built, customizable WebRTC video and audio UI components.
 
-- TypeScript
-- React
-- Vite
-- Tailwind CSS
-- shadcn/ui and Radix UI
-- TanStack Query
-- React Router
-- WebRTC signaling over WebSockets
-
-## Project Structure
+## 📁 Project Structure
 
 ```text
 CollabSpace/
-|-- Backend/
-|   |-- app/
-|   |   |-- core/       # Configuration, security, Redis
-|   |   |-- db/         # SQLAlchemy database setup
-|   |   |-- models/     # ORM models
-|   |   |-- routes/     # REST and WebSocket routes
-|   |   `-- schemas/    # Pydantic request and response schemas
-|   `-- requirements.txt
-|-- Frontend/
-|   |-- src/
-|   |   |-- components/
-|   |   |-- contexts/
-|   |   |-- pages/
-|   |   `-- lib/
-|   `-- package.json
-`-- FrontendTest/       # Manual WebSocket and meeting test pages
+├── Backend/
+│   ├── app/
+│   │   ├── core/       # Config, Security, and Redis Pub/Sub listeners
+│   │   ├── db/         # SQLAlchemy async engine setup
+│   │   ├── models/     # Database tables (Users, Chats, Messages)
+│   │   ├── routes/     # REST endpoints & WebSocket connections
+│   │   └── schemas/    # Pydantic data validation schemas
+│   ├── alembic/        # Database migrations
+│   └── requirements.txt
+├── Frontend/
+│   ├── src/
+│   │   ├── components/ # Reusable UI, Modals, and Chat Interfaces
+│   │   ├── contexts/   # Global React State (Auth, WebSockets, Calls)
+│   │   └── lib/        # API utilities
+│   ├── index.html
+│   └── package.json
 ```
 
-## Prerequisites
+## 🛠️ Local Development Setup
 
-- Python 3.13 or a compatible Python 3 version
-- Node.js and npm
-- MySQL
-- Redis running locally on port `6379`
+### Prerequisites
+- Python 3.10+
+- Node.js & npm
+- PostgreSQL running locally (or a cloud DB like Neon)
+- Redis running locally on port `6379` (or a cloud cache like Upstash)
+- [LiveKit Cloud](https://livekit.io/) Project Credentials
 
-## Environment Variables
-
-Create a root `.env` file:
-
+### 1. Environment Variables
+Create a `.env` file in the `Backend/` directory:
 ```env
-DATABASE_URL=mysql+pymysql://USER:PASSWORD@localhost/DATABASE_NAME
-SECRET_KEY=replace-with-a-secret-key
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-REDIS_URL=redis://localhost:6379
+DATABASE_URL=postgresql+asyncpg://user:password@localhost/collabspace
+SECRET_KEY=your_super_secret_key
+ALGORITHM=xxxxx
+ACCESS_TOKEN_EXPIRE_MINUTES=xxxx
+REDIS_URL=redis://localhost:xxxx
+
+# LiveKit WebRTC Configuration
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your_api_key
+LIVEKIT_API_SECRET=your_api_secret
+FRONTEND_URL=http://localhost:5173
 ```
 
-The frontend uses `Frontend/.env.development`:
-
+Create a `.env.local` file in the `Frontend/` directory:
 ```env
 VITE_API_URL=http://localhost:8000
 VITE_WS_URL=ws://localhost:8000
 ```
 
-## Run Locally
-
-Start MySQL and Redis first.
-
-### Backend
-
-```powershell
+### 2. Start the Backend
+```bash
 cd Backend
 python -m venv venv
-.\venv\Scripts\Activate.ps1
+# On Windows: .\venv\Scripts\Activate
+# On Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
+
+# Run database migrations
+alembic upgrade head
+
+# Start the FastAPI server
 uvicorn app.main:app --reload --port 8000
 ```
 
-The API is available at `http://localhost:8000`. FastAPI documentation is available at `http://localhost:8000/docs`.
-
-### Frontend
-
-```powershell
+### 3. Start the Frontend
+```bash
 cd Frontend
 npm install
 npm run dev
 ```
-
-Open the local URL printed by Vite.
-
-## Main Features
-
-- User registration, login, JWT authentication, and profile settings
-- Direct and group chats
-- Realtime messages over WebSockets
-- Redis Pub/Sub fan-out for chat and global presence events
-- Typing indicators, read receipts, online status, and heartbeat checks
-- Meeting creation, joining, ending, and WebRTC signaling
-- Frontend workspaces for saved messages, tasks, whiteboard, and analytics
-
-## Database Schema
-
-The SQLAlchemy models define:
-
-| Table | Purpose | Important constraints and indexes |
-| --- | --- | --- |
-| `users` | Accounts and profiles | Unique `username`, unique `email`, indexed primary key |
-| `chats` | Direct and group conversations | Indexed primary key, optional creator foreign key |
-| `chat_members` | Chat membership and read state | Unique `(chat_id, user_id)`, foreign keys to chats, users, and messages |
-| `messages` | Chat history | Indexes on `(chat_id, created_at)` and `(chat_id, id)` |
-| `meetings` | Active and ended meetings | Unique `room_name`, foreign keys to chats and users |
-
-Message history uses cursor pagination:
-
-```http
-GET /messages/{chat_id}?limit=20&before_id=123
-```
-
-The response includes `messages`, `next_cursor`, and `has_more`. The page size defaults to `20` and is capped at `100`.
-
-## Realtime Architecture
-
-The FastAPI lifespan starts:
-
-- A Redis subscriber for `chat:*` and `global_presence` channels
-- A WebSocket heartbeat task for chat connections
-
-Chat and presence events are published through Redis and delivered to WebSocket connections held by the local application process. Meeting signaling is currently stored in process-local memory.
-
-## Testing
-
-`FrontendTest/` contains manual HTML pages for exercising WebSocket chat and meeting behavior.
-
-The repository does not currently include an automated test suite or load tests.
-
